@@ -43,6 +43,14 @@ import time
 import os
 import psutil
 
+# Process enable flags
+ENABLE_GATEWAY = True
+ENABLE_DASHBOARD = True
+ENABLE_CAMERA = False
+ENABLE_SEMAPHORES = True
+ENABLE_TRAFFIC_COM = True
+ENABLE_SERIAL_HANDLER = True
+
 # Pin to CPU cores 0–3
 # 프로세르를 모든 cpu 코어에 고정
 try:
@@ -66,7 +74,10 @@ logging.basicConfig(level=logging.INFO)
 
 from src.gateway.processGateway import processGateway
 from src.dashboard.processDashboard import processDashboard
-from src.hardware.camera.processCamera import processCamera
+
+if ENABLE_CAMERA:
+    from src.hardware.camera.processCamera import processCamera
+
 from src.hardware.serialhandler.processSerialHandler import processSerialHandler
 from src.data.Semaphores.processSemaphores import processSemaphores
 from src.data.TrafficCommunication.processTrafficCommunication import processTrafficCommunication
@@ -76,13 +87,7 @@ from src.statemachine.stateMachine import StateMachine
 from src.statemachine.systemMode import SystemMode
 
 # ------ New component imports starts here ------#
-# Process enable flags
-ENABLE_GATEWAY = True
-ENABLE_DASHBOARD = True
-ENABLE_CAMERA = False
-ENABLE_SEMAPHORES = True
-ENABLE_TRAFFIC_COM = True
-ENABLE_SERIAL_HANDLER = True
+
 
 # ------ New component imports ends here ------#
 
