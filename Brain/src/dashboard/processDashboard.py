@@ -315,7 +315,8 @@ class processDashboard(WorkerProcess):
         """Monitor and update hardware metrics periodically."""
         self.cpuCoreUsage = psutil.cpu_percent(interval=None, percpu=False)
         self.memoryUsage = psutil.virtual_memory().percent
-        self.cpuTemperature = round(psutil.sensors_temperatures()['cpu_thermal'][0].current)
+        # self.cpuTemperature = round(psutil.sensors_temperatures()['cpu_thermal'][0].current)
+        self.cpuTemperature = 0
 
         eventlet.spawn_after(1, self.update_hardware_data) # 1초마다 프론트엔드로 업데이트 
 
