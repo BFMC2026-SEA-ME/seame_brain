@@ -48,7 +48,7 @@ import psutil
 try:
     available_cores = list(range(psutil.cpu_count()))
     psutil.Process(os.getpid()).cpu_affinity(available_cores)
-    print(available_cores)
+    # print(available_cores) # 0~5 for jetson 
     print("Sucess to use psutil") 
 except:
     print("Fail to use psutil ")
@@ -76,7 +76,13 @@ from src.statemachine.stateMachine import StateMachine
 from src.statemachine.systemMode import SystemMode
 
 # ------ New component imports starts here ------#
-
+# Process enable flags
+ENABLE_GATEWAY = True
+ENABLE_DASHBOARD = True
+ENABLE_CAMERA = False
+ENABLE_SEMAPHORES = True
+ENABLE_TRAFFIC_COM = True
+ENABLE_SERIAL_HANDLER = True
 
 # ------ New component imports ends here ------#
 
@@ -131,8 +137,11 @@ stateChangeSubscriber = messageHandlerSubscriber(queueList, StateChange, "lastOn
 StateMachine.initialize_shared_state(queueList)
 
 # Initializing gateway
-processGateway = processGateway(queueList, logging)
-processGateway.start()
+if ENABLE_GATEWAY:
+    processGateway = processGateway(queueList, logging)
+    processGateway.start()
+else:
+    processGateway = None
 
 # ===================================== INITIALIZE PROCESSES ==================================
 
@@ -140,27 +149,51 @@ processGateway.start()
 
 # Initializing dashboard
 dashboard_ready = Event()
-processDashboard = processDashboard(queueList, logging, dashboard_ready, debugging = False)
+if ENABLE_DASHBOARD:
+    processDashboard = processDashboard(queueList, logging, dashboard_ready, debugging = False)
+else:
+    processDashboard = None
+    dashboard_ready.set()
 
 # Initializing camera
 camera_ready = Event()
-processCamera = processCamera(queueList, logging, camera_ready, debugging = False)
+if ENABLE_CAMERA:
+    processCamera = processCamera(queueList, logging, camera_ready, debugging = False)
+else:
+    processCamera = None
 
 # Initializing semaphores
 semaphore_ready = Event()
-processSemaphore = processSemaphores(queueList, logging, semaphore_ready, debugging = False)
+if ENABLE_SEMAPHORES:
+    processSemaphore = processSemaphores(queueList, logging, semaphore_ready, debugging = False)
+else:
+    processSemaphore = None
 
 # Initializing GPS
 traffic_com_ready = Event()
-processTrafficCom = processTrafficCommunication(queueList, logging, 3, traffic_com_ready, debugging = False)
+if ENABLE_TRAFFIC_COM:
+    processTrafficCom = processTrafficCommunication(queueList, logging, 3, traffic_com_ready, debugging = False)
+else:
+    processTrafficCom = None
 
 # Initializing serial connection NUCLEO - > PI
 serial_handler_ready = Event()
-processSerialHandler = processSerialHandler(queueList, logging, serial_handler_ready, dashboard_ready, debugging = False)
+if ENABLE_SERIAL_HANDLER:
+    processSerialHandler = processSerialHandler(queueList, logging, serial_handler_ready, dashboard_ready, debugging = False)
+else:
+    processSerialHandler = None
 
 # Adding all processes to the list
-allProcesses.extend([processCamera, processSemaphore, processTrafficCom, processSerialHandler, processDashboard])
-allEvents.extend([camera_ready, semaphore_ready, traffic_com_ready, serial_handler_ready, dashboard_ready])
+for proc, ready_event in [
+    (processCamera, camera_ready),
+    (processSemaphore, semaphore_ready),
+    (processTrafficCom, traffic_com_ready),
+    (processSerialHandler, serial_handler_ready),
+    (processDashboard, dashboard_ready),
+]:
+    if proc is not None:
+        allProcesses.append(proc)
+        allEvents.append(ready_event)
 
 # ------ New component initialize starts here ------#
 
@@ -206,9 +239,11 @@ except KeyboardInterrupt:
 
     for proc in reversed(allProcesses):
         proc.stop()
-    processGateway.stop()
+    if processGateway is not None:
+        processGateway.stop()
 
     # wait for all processes to finish before exiting
     for proc in reversed(allProcesses):
         shutdown_process(proc)
-    shutdown_process(processGateway)
+    if processGateway is not None:
+        shutdown_process(processGateway)
