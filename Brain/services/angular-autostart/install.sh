@@ -20,7 +20,7 @@ sudo chmod +x "$DEST_DIR/start-dashboard.sh"
 
 # Log file
 sudo touch "$LOG_FILE"
-sudo chown pi:pi "$LOG_FILE"
+sudo chown team1:team1 "$LOG_FILE" # 사용자명으로 바꾸기 
 sudo chmod 0644 "$LOG_FILE"
 
 # Install (or update) systemd unit
