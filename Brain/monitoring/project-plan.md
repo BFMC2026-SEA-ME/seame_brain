@@ -1,80 +1,123 @@
-# System Architecture Overview
+# 🚗 Project Overview
 
-This document describes the overall system architecture, including software stack, hardware selection, perception & localization, and planning & control modules.
+This document presents the overall project plan, including the software stack, hardware configuration, perception and localization pipeline, and planning and control modules.
 
 ---
 
-## Software
+## 🧩 Software Stack
 
 - **Python**
 - **C++**
 - **ROS 2 Humble**
 
----
-
-## Hardware
-
-### Implemented Sensors & Computing Unit
-- **Intel RealSense D455f** (Depth Camera)
-- **AMT103-V Wheel Encoder**
-- **NVIDIA Jetson Orin Nano**
-
-### Why These Components?
-
-#### AMT103-V Wheel Encoder
-The AMT103-V wheel encoder is used to measure wheel rotation, which enables accurate estimation of the vehicle’s longitudinal speed.  
-Although an IMU is available, relying solely on IMU data leads to accumulated drift over time.
-
-By fusing **wheel encoder** and **IMU** data, we can improve velocity estimation accuracy and achieve more stable vehicle pose estimation.
-
-#### Intel RealSense D455f
-Since the vehicle is not equipped with a LiDAR sensor, direct distance measurement to obstacles using laser-based sensing is not possible.  
-Instead, a **depth camera** is used to obtain per-pixel distance information, enabling obstacle distance estimation and spatial perception.
-
-The Intel RealSense D455f provides sufficient depth range and accuracy for indoor track environments.
-
-#### NVIDIA Jetson Orin Nano
-Object detection is performed using deep learning–based models such as **YOLO**.  
-Compared to Raspberry Pi 5, the Jetson Orin Nano offers significantly higher GPU performance, making it suitable for real-time inference and parallel ROS 2 node execution.
+> The system is implemented using a modular ROS 2 architecture to enable real-time processing and efficient inter-node communication.
 
 ---
 
-## Perception & Localization
+## 🛠 Hardware Configuration
 
-### Lane Detection
-- Inverse Perspective Mapping (IPM)
-- Canny edge detection
+### 📡 Sensors & Computing Unit
 
-### Object Detection
-- Traffic sign detection
-- Obstacle detection
+| Component | Description |
+|---------|------------|
+| **Intel RealSense D455f** | Depth Camera |
+| **AMT103-V** | Wheel Encoder |
+| **NVIDIA Jetson Orin Nano** | Embedded GPU Computing Unit |
 
-For object detection, we use the **YOLO** algorithm.  
-A suitable YOLO model is selected and optimized for the competition environment.
+---
+
+### 🔍 Rationale for Hardware Selection
+
+#### ⚙ AMT103-V Wheel Encoder
+The AMT103-V wheel encoder measures wheel rotation to estimate the vehicle’s **longitudinal velocity**.
+
+Relying solely on IMU data leads to **accumulated drift** over time.  
+By fusing **wheel encoder** and **IMU** measurements, the system achieves more accurate velocity estimation and a more stable vehicle pose.
+
+---
+
+#### 📷 Intel RealSense D455f (Depth Camera)
+As the vehicle is not equipped with a LiDAR sensor, laser-based distance measurement is unavailable.  
+Instead, a **depth camera** is used to obtain per-pixel distance information, enabling:
+
+- Obstacle distance estimation  
+- Spatial perception of the environment  
+
+The RealSense D455f provides sufficient depth range and accuracy for **indoor track environments**.
+
+---
+
+#### 🧠 NVIDIA Jetson Orin Nano
+Object detection is performed using deep learning–based models such as **YOLO**.
+
+Compared to the Raspberry Pi 5, the Jetson Orin Nano offers significantly higher GPU performance, making it well suited for:
+
+- Real-time inference  
+- Parallel execution of multiple ROS 2 nodes  
+
+This ensures stable performance under computationally demanding workloads.
+
+---
+
+## 👁 Perception & Localization
+
+### 🛣 Lane Detection
+- Inverse Perspective Mapping (**IPM**)  
+- Canny Edge Detection  
+
+Lane features are extracted in a **Bird’s-Eye View (BEV)** representation to improve robustness and geometric consistency.
+
+---
+
+### 🚦 Object Detection
+- Traffic sign detection  
+- Obstacle detection  
+
+The **YOLO** algorithm is used for object detection, with the model selected and optimized for **real-time inference** in the competition environment.
 
 In addition, **HSV color-space filtering** is applied to distinguish traffic light colors, improving robustness under varying lighting conditions.
 
-### Localization
-- Sensor fusion using **Extended Kalman Filter (EKF)**
-  - Wheel encoder
-  - IMU
-- **Particle Filter–based localization** initialized from EKF estimation
+---
 
-In the final competition environment, **GPS data is not available**.  
-Therefore, localization must rely entirely on onboard sensors.
+### 📍 Localization
 
-First, the **EKF** estimates the vehicle’s pose by fusing wheel encoder and IMU data, providing an initial position estimate.  
-Then, particles are generated around this EKF-estimated pose.
+#### 🔗 Sensor Fusion with EKF
+- Wheel encoder  
+- IMU  
 
-Using **lane-map matching**, the Particle Filter evaluates each particle by comparing detected lane features (in Bird’s-Eye View) with a pre-mapped lane map.  
-Through iterative resampling, the particle distribution converges to the most likely vehicle position.
+An **Extended Kalman Filter (EKF)** fuses motion-related sensor data to estimate the vehicle’s pose.
 
-The combination of **EKF** for motion-based estimation and **Particle Filter** for map-based correction enables accurate localization without GPS.
+> ⚠️ GPS data is **not available** in the final competition environment.  
+> Therefore, localization relies entirely on onboard sensors.
 
 ---
 
-## Planning & Control
+#### 🎯 Particle Filter–Based Localization
+1. An initial pose is estimated using EKF  
+2. Particles are generated around the EKF-estimated pose  
+3. Detected lane features in BEV are compared with a **pre-mapped lane map**  
+4. Particle weights are computed and resampling is performed iteratively  
+5. The particle distribution converges to the most likely vehicle position  
 
-- Global path planning
-- Local path planning
-- Model Predictive Control (MPC)
+By combining **motion-based estimation (EKF)** with  
+**map-based correction (Particle Filter)**, the system achieves accurate localization without GPS.
+
+---
+
+## 🧭 Planning & Control
+
+- Global path planning  
+- Local path planning  
+- **Model Predictive Control (MPC)**  
+
+MPC computes optimal control inputs while considering vehicle dynamics, enabling accurate and smooth trajectory tracking.
+
+---
+
+## 📅 Project Timeline
+
+<p align="center">
+  <img src="images/plan_timeline.png" width="800">
+</p>
+
+**Figure X.** Task-level project timeline aligned with competition milestones.
