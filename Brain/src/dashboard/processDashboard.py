@@ -316,7 +316,7 @@ class processDashboard(WorkerProcess):
         self.cpuCoreUsage = psutil.cpu_percent(interval=None, percpu=False)
         self.memoryUsage = psutil.virtual_memory().percent
         try:
-            self.cpuTemperature = round(psutil.sensors_temperatures()['cpu_thermal'][0].current) # --> 다른 방법으로 연결하기 
+            self.cpuTemperature = round(psutil.sensors_temperatures()['cpu-thermal'][0].current) # --> 다른 방법으로 연결하기 
         except : 
             print("Can not use psutil.sensor_temparatures() in jetson ")
         eventlet.spawn_after(1, self.update_hardware_data) # 1초마다 프론트엔드로 업데이트 
