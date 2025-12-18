@@ -55,8 +55,8 @@ class RosCameraThread(ThreadWithStop):
         debugging: bool = False,
         topic_name: str = "/camera/camera/color/image_raw/compressed",
         realsense_cmd: Optional[str] = None,
-        keepalive_sec: float = 1.0,
-        min_frame_interval: float = 0.05, #20fps
+        keepalive_sec: float = 0.3,
+        min_frame_interval: float = 0.1,  # fps cap to prevent backlog
     ):
         super(RosCameraThread, self).__init__(pause=0.01)
         self.queuesList = queuesList
@@ -192,14 +192,7 @@ class RosCameraThread(ThreadWithStop):
                 def listener_callback(self, msg):
                     try:
                         now_ts = time.time()
-                        # General 큐에 뭔가라도 쌓여 있으면 직전 프레임을 대체할 필요가 없으므로 드롭(항상 최신만 유지)
-                        try:
-                            if outer_self.queuesList["General"].qsize() > 0:
-                                return
-                        except Exception:
-                            pass
-
-                        # FPS 제한: min_frame_interval보다 빠르면 드롭
+                        # FPS 제한: min_frame_interval보다 빠르면 드롭 (과도한 적재 방지)
                         if now_ts - outer_self._last_send_ts < outer_self.min_frame_interval:
                             return
 
