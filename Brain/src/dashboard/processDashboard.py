@@ -387,8 +387,14 @@ class processDashboard(WorkerProcess):
             if resp is not None:
                 if msg == "SerialConnectionState":
                     self.serialConnected = resp
-
-                self.socketio.emit(msg, {"value": resp})
+                if msg == "serialCamera":
+                    # 바이너리 이미지 전송 (socket.IO로 전송)
+                    try:
+                        self.socketio.emit(msg, resp, binary=True)
+                    except Exception:
+                        self.socketio.emit(msg, {"value": resp})
+                else:
+                    self.socketio.emit(msg, {"value": resp})
                 if self.debugging:
                     self.logger.info(f"{msg}: {resp}")
 

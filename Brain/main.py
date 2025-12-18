@@ -46,10 +46,11 @@ import psutil
 # Process enable flags
 ENABLE_GATEWAY = True
 ENABLE_DASHBOARD = True
-ENABLE_CAMERA = False
+ENABLE_CAMERA = True
 ENABLE_SEMAPHORES = False
 ENABLE_TRAFFIC_COM = False
 ENABLE_SERIAL_HANDLER = True
+ENABLE_CMDVELBRIDGE = True
 
 # Pin to CPU cores 0–3
 # 프로세르를 모든 cpu 코어에 고정
@@ -75,8 +76,6 @@ logging.basicConfig(level=logging.INFO)
 from src.gateway.processGateway import processGateway
 from src.dashboard.processDashboard import processDashboard
 
-if ENABLE_CAMERA:
-    from src.hardware.camera.processCamera import processCamera
 
 from src.hardware.serialhandler.processSerialHandler import processSerialHandler
 from src.data.Semaphores.processSemaphores import processSemaphores
@@ -87,7 +86,8 @@ from src.statemachine.stateMachine import StateMachine
 from src.statemachine.systemMode import SystemMode
 
 # ------ New component imports starts here ------#
-
+from src.hardware.camera.processRosCamera import processRosCamera
+from src.bridge.processCmdbrdige import create_cmd_vel_bridge_process
 
 # ------ New component imports ends here ------#
 
@@ -133,6 +133,7 @@ queueList = {
     "Warning": Queue(),
     "General": Queue(),
     "Config": Queue(),
+    "Image": Queue(),
 }
 logging = logging.getLogger()
 
@@ -163,7 +164,7 @@ else:
 # Initializing camera
 camera_ready = Event()
 if ENABLE_CAMERA:
-    processCamera = processCamera(queueList, logging, camera_ready, debugging = False)
+    processCamera = processRosCamera(queueList, logging, camera_ready, debugging = False)
 else:
     processCamera = None
 
@@ -188,6 +189,15 @@ if ENABLE_SERIAL_HANDLER:
 else:
     processSerialHandler = None
 
+# Initializing /cmd_vel bridge
+cmdvel_bridge_ready = Event()
+if ENABLE_CMDVELBRIDGE:
+    processCmdVelBridge = create_cmd_vel_bridge_process(queueList, ready_event=cmdvel_bridge_ready)
+else:
+    processCmdVelBridge = None
+    cmdvel_bridge_ready.set()
+    
+
 # Adding all processes to the list
 for proc, ready_event in [
     (processCamera, camera_ready),
@@ -195,6 +205,7 @@ for proc, ready_event in [
     (processTrafficCom, traffic_com_ready),
     (processSerialHandler, serial_handler_ready),
     (processDashboard, dashboard_ready),
+    (processCmdVelBridge, cmdvel_bridge_ready),
 ]:
     if proc is not None:
         allProcesses.append(proc)
@@ -217,6 +228,7 @@ try:
     # wait for all events to be set
     for event in allEvents:
         event.wait()
+        # print("Process is herer")
 
     logging.info("All processes signaled ready; entering main control loop.")
 

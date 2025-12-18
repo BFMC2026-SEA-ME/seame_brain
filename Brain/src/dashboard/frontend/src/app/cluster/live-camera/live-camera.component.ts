@@ -53,7 +53,16 @@ export class LiveCameraComponent {
 
     this.cameraSubscription = this.webSocketService.receiveCamera().subscribe(
       (message) => {
-        this.image = `data:image/png;base64,${message.value}`;
+        // 바이너리(ArrayBuffer) 또는 base64 문자열 모두 처리
+        if (message instanceof ArrayBuffer) {
+          const blob = new Blob([message], { type: 'image/jpeg' });
+          this.image = URL.createObjectURL(blob);
+        } else if (message && message.type === 'Buffer' && Array.isArray((message as any).data)) {
+          const blob = new Blob([new Uint8Array((message as any).data)], { type: 'image/jpeg' });
+          this.image = URL.createObjectURL(blob);
+        } else if ((message as any)?.value) {
+          this.image = `data:image/jpeg;base64,${(message as any).value}`;
+        }
         this.loading = false;
         // Reset the loading timeout on each new image
         if (this.loadingTimeout) {

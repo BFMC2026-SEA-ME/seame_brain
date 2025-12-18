@@ -135,6 +135,12 @@ class threadGateway(ThreadWithStop):
             message = self.queuesList["Warning"].get()
         elif not self.queuesList["General"].empty():
             message = self.queuesList["General"].get()
+        elif "Image" in self.queuesList and not self.queuesList["Image"].empty():
+            # 이미지는 최신 1개만 전송하고 나머지는 드롭해 적체 방지
+            latest = None
+            while not self.queuesList["Image"].empty():
+                latest = self.queuesList["Image"].get()
+            message = latest
         if message is not None:
             self.send(message)
         if not self.queuesList["Config"].empty():

@@ -36,7 +36,7 @@ class mainCamera(Enum):
     msgType = "str"
 
 class serialCamera(Enum):
-    Queue = "General"
+    Queue = "Image"
     Owner = "threadCamera"
     msgID = 2
     msgType = "str"

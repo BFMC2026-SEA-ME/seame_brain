@@ -26,8 +26,8 @@ class IpManager:
             print("\033[1;97m[ Dashboard ] :\033[0m \033[1;93mWARNING\033[0m - Failed to retrieve IP address.")
             return
 
-        # regular expression pattern to match IP addresses
-        ip_pattern = r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'
+        # regular expression pattern to match IPv4 or localhost in the URL host 부분
+        ip_pattern = r'(?:\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|localhost)'
 
         # read the file content
         try:
