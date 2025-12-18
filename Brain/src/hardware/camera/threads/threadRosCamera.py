@@ -1,35 +1,8 @@
 # Copyright (c) 2019, Bosch Engineering Center Cluj and BFMC organizers
 # All rights reserved.
-
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-
-# 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
-
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-#    this list of conditions and the following disclaimer in the documentation
-#    and/or other materials provided with the distribution.
-
-# 3. Neither the name of the copyright holder nor the names of its
-#    contributors may be used to endorse or promote products derived from
-#    this software without specific prior written permission.
-
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# (BSD-3 Clause)
 
 import base64
-import os
-import shlex
-import subprocess
 import time
 from typing import Optional
 
@@ -41,12 +14,14 @@ from src.statemachine.systemMode import SystemMode
 
 from rclpy.qos import qos_profile_sensor_data
 
-class RosCameraThread(ThreadWithStop):
-    """ROS2 RealSense 이미지 구독 스레드.
 
-    - 필요 시 `realsense2_camera` 노드를 서브프로세스로 실행
-    - ROS2 압축 이미지 토픽(CompressedImage)을 받아 base64 후 `serialCamera` 채널로 전송
-    - 최근 프레임을 주기적으로 재전송해 프런트 로딩 끊김을 줄임
+class RosCameraThread(ThreadWithStop):
+    """ROS2 CompressedImage 구독 스레드 (구독 전용)
+
+    - realsense2_camera 노드는 외부에서 따로 실행한다고 가정
+      예) ros2 run realsense2_camera realsense2_camera_node
+    - /.../compressed 토픽을 받아 base64로 인코딩하여 serialCamera로 전송
+    - keepalive로 마지막 프레임을 주기적으로 재전송 (프론트 끊김 방지)
     """
 
     def __init__(
@@ -55,29 +30,27 @@ class RosCameraThread(ThreadWithStop):
         logger,
         debugging: bool = False,
         topic_name: str = "/camera/camera/color/image_raw/compressed",
-        realsense_cmd: Optional[str] = None,
         keepalive_sec: float = 0.5,
-        min_frame_interval: float = 0.1,  #최소 10 fps
+        min_frame_interval: float = 0.1,  # 10fps (필요시 0.05=20fps)
+        init_retry_sec: float = 1.0,      # 토픽/ROS 준비 안됐을 때 재시도 간격
+        node_name: str = "ros_camera_bridge",
     ):
         super(RosCameraThread, self).__init__(pause=0.01)
+
         self.queuesList = queuesList
         self.logger = logger
         self.debugging = debugging
+
         self.topic_name = topic_name
         self.keepalive_sec = keepalive_sec
-        # 최소 프레임 간격(초). 너무 많이 보내면 큐가 밀려 지연이 발생하므로 속도 제한.
         self.min_frame_interval = min_frame_interval
+        self.init_retry_sec = init_retry_sec
+        self.node_name = node_name
 
         self.serialCameraSender = messageHandlerSender(self.queuesList, serialCamera)
         self.stateChangeSubscriber = messageHandlerSubscriber(
             self.queuesList, StateChange, "lastOnly", True
         )
-
-        self.realsense_cmd = (
-            realsense_cmd
-            or os.environ.get("REAL_SENSE_CMD", "ros2 run realsense2_camera realsense2_camera_node")
-        )
-        self.realsense_proc: Optional[subprocess.Popen] = None
 
         self._ros_import_error = False
         self._rclpy = None
@@ -87,6 +60,7 @@ class RosCameraThread(ThreadWithStop):
         self._last_payload: Optional[str] = None
         self._last_emit_ts: float = 0.0
         self._last_send_ts: float = 0.0
+        self._last_init_try_ts: float = 0.0
 
     # ================================ STATE CHANGE ====================================
     def state_change_handler(self):
@@ -101,28 +75,32 @@ class RosCameraThread(ThreadWithStop):
 
     # ================================ RUN ============================================
     def thread_work(self):
+        # 1) ROS Node 없으면 초기화 시도 (realsense 노드 외부 실행)
         if self._node is None:
-            self._maybe_start_realsense_node()
-            self._maybe_init_ros()
-            time.sleep(0.1)
-            return
-
-        # rclpy 컨텍스트가 내려갔으면 재초기화 시도
-        if self._rclpy is not None and not self._rclpy.ok():
-            self._reset_ros_context()
+            now = time.time()
+            if now - self._last_init_try_ts >= self.init_retry_sec:
+                self._last_init_try_ts = now
+                self._maybe_init_ros()
             time.sleep(0.05)
             return
 
+        # 2) rclpy 컨텍스트 죽었으면 리셋 후 재시도
+        if self._rclpy is not None and not self._rclpy.ok():
+            self._reset_ros_context()
+            time.sleep(0.1)
+            return
+
+        # 3) executor spin
         try:
             if self._executor is not None:
-                self._executor.spin_once(timeout_sec=0.05)
+                self._executor.spin_once(timeout_sec=0.02)
         except Exception as exc:
-            # 컨텍스트가 이미 shutdown된 경우 반복 에러를 막기 위해 이후 spin을 건너뜀
             print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;91mERROR\033[0m - spin_once failed: {exc}")
             self._reset_ros_context()
             time.sleep(0.1)
             return
 
+        # 4) keepalive: 마지막 프레임 재전송
         now = time.time()
         if self._last_payload is not None and now - self._last_emit_ts >= self.keepalive_sec:
             self.serialCameraSender.send(self._last_payload)
@@ -131,34 +109,9 @@ class RosCameraThread(ThreadWithStop):
     # ================================ STOP ============================================
     def stop(self):
         self._reset_ros_context()
-
-        if self.realsense_proc is not None:
-            self.realsense_proc.terminate()
-            try:
-                self.realsense_proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self.realsense_proc.kill()
         super(RosCameraThread, self).stop()
 
     # ================================ INTERNALS =======================================
-    def _maybe_start_realsense_node(self):
-        """필요 시 RealSense ROS 노드를 띄움."""
-        if self.realsense_proc is not None or not self.realsense_cmd:
-            return
-        try:
-            args = shlex.split(self.realsense_cmd)
-            self.realsense_proc = subprocess.Popen(
-                args,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.STDOUT,
-                )
-
-            print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;92mINFO\033[0m - Started RealSense node: {self.realsense_cmd}")
-        except FileNotFoundError:
-            print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;91mERROR\033[0m - Command not found: {self.realsense_cmd}")
-        except Exception as exc:
-            print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;91mERROR\033[0m - Failed to start RealSense node: {exc}")
-
     def _maybe_init_ros(self):
         """ROS2 초기화 및 구독 설정."""
         if self._node is not None or self._ros_import_error:
@@ -179,29 +132,37 @@ class RosCameraThread(ThreadWithStop):
             if not rclpy.ok():
                 rclpy.init(args=None)
 
+            outer_self = self
             serial_sender = self.serialCameraSender
-            last_payload_ref = self
-            outer_self = self  # alias for inner class access
 
             class RosImageBridgeNode(Node):
                 def __init__(self, topic: str):
-                    super().__init__("ros_camera_bridge")
+                    super().__init__(outer_self.node_name)
                     self.subscription = self.create_subscription(
-                        CompressedImage, topic, self.listener_callback, qos_profile_sensor_data
+                        CompressedImage,
+                        topic,
+                        self.listener_callback,
+                        qos_profile_sensor_data,
                     )
+                    self.get_logger().info(f"Subscribed to {topic} (qos_profile_sensor_data)")
 
                 def listener_callback(self, msg):
                     try:
                         now_ts = time.time()
-                        # FPS 제한: min_frame_interval보다 빠르면 드롭 (과도한 적재 방지)
+
+                        # FPS 제한: 너무 많이 보내면 대시보드/큐가 밀릴 수 있음
                         if now_ts - outer_self._last_send_ts < outer_self.min_frame_interval:
                             return
 
+                        # msg.data: 이미 JPEG/PNG 바이트임 → base64만 하면 됨
                         payload = base64.b64encode(bytes(msg.data)).decode("utf-8")
+
                         serial_sender.send(payload)
-                        last_payload_ref._last_payload = payload
-                        last_payload_ref._last_emit_ts = time.time()
-                        last_payload_ref._last_send_ts = now_ts
+
+                        outer_self._last_payload = payload
+                        outer_self._last_emit_ts = now_ts
+                        outer_self._last_send_ts = now_ts
+
                     except Exception as exc2:
                         self.get_logger().error(f"Image callback failed: {exc2}")
 
@@ -209,9 +170,12 @@ class RosCameraThread(ThreadWithStop):
             self._node = RosImageBridgeNode(self.topic_name)
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
-            print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;92mINFO\033[0m - Subscribed to {self.topic_name}")
+
+            print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;92mINFO\033[0m - Ready. Listening: {self.topic_name}")
+
         except Exception as exc:
             print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;91mERROR\033[0m - Failed to init ROS2: {exc}")
+            self._reset_ros_context()
 
     def _reset_ros_context(self):
         """Clean up ROS2 executor/node/context so we can re-init on next loop."""
@@ -241,3 +205,6 @@ class RosCameraThread(ThreadWithStop):
         self._executor = None
         self._node = None
         self._rclpy = None
+        self._last_payload = None
+        self._last_emit_ts = 0.0
+        self._last_send_ts = 0.0

@@ -1,35 +1,11 @@
 # Copyright (c) 2019, Bosch Engineering Center Cluj and BFMC organizers
 # All rights reserved.
+# (BSD-3 Clause)
 
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
+"""ROS2 RealSense 카메라 프로세스 (구독 전용)
 
-# 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
-
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-#    this list of conditions and the following disclaimer in the documentation
-#    and/or other materials provided with the distribution.
-
-# 3. Neither the name of the copyright holder nor the names of its
-#    contributors may be used to endorse or promote products derived from
-#    this software without specific prior written permission.
-
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-"""ROS2 RealSense 카메라 프로세스.
-
-기존 `processCamera.py`(picamera2 전용)를 건드리지 않고, RealSense + ROS2
-이미지 토픽을 받아 대시보드로 전달하는 별도 프로세스입니다.
+- realsense2_camera 노드는 외부에서 따로 실행한다고 가정
+- 이 프로세스는 CompressedImage 토픽만 구독해서 dashboard로 전달
 """
 
 if __name__ == "__main__":
@@ -46,7 +22,7 @@ from src.hardware.camera.threads.threadRosCamera import RosCameraThread
 
 
 class processRosCamera(WorkerProcess):
-    """RealSense ROS 카메라 프로세스."""
+    """RealSense ROS 카메라 프로세스 (구독 전용)."""
 
     def __init__(self, queueList, logging, ready_event=None, debugging: bool = False):
         self.queuesList = queueList
@@ -57,16 +33,18 @@ class processRosCamera(WorkerProcess):
         )
         super(processRosCamera, self).__init__(self.queuesList, ready_event)
 
-    # ===================================== INIT TH ====================================
     def _init_threads(self):
         cam_thread = RosCameraThread(
             self.queuesList,
             self.logging,
             debugging=self.debugging,
+            topic_name="/camera/camera/color/image_raw/compressed",
+            keepalive_sec=0.5,
+            min_frame_interval=0.1,  # 10fps, 필요하면 0.05로
+            init_retry_sec=1.0,
         )
         self.threads.append(cam_thread)
 
-    # ================================ STATE CHANGE ====================================
     def state_change_handler(self):
         message = self.stateChangeSubscriber.receive()
         if message is not None:
@@ -89,6 +67,8 @@ if __name__ == "__main__":
     }
 
     logger = logging.getLogger()
+    logging.basicConfig(level=logging.INFO)
+
     process = processRosCamera(queueList, logger, debugging=True)
     process.daemon = True
     process.start()
