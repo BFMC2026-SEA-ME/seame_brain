@@ -102,8 +102,9 @@ class RosCameraThread(ThreadWithStop):
             time.sleep(0.1)
             return
 
-        # rclpy 컨텍스트가 내려갔으면 더 이상 spin 호출하지 않음
+        # rclpy 컨텍스트가 내려갔으면 재초기화 시도
         if self._rclpy is not None and not self._rclpy.ok():
+            self._reset_ros_context()
             time.sleep(0.05)
             return
 
@@ -113,6 +114,7 @@ class RosCameraThread(ThreadWithStop):
         except Exception as exc:
             # 컨텍스트가 이미 shutdown된 경우 반복 에러를 막기 위해 이후 spin을 건너뜀
             print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;91mERROR\033[0m - spin_once failed: {exc}")
+            self._reset_ros_context()
             time.sleep(0.1)
             return
 
@@ -123,22 +125,7 @@ class RosCameraThread(ThreadWithStop):
 
     # ================================ STOP ============================================
     def stop(self):
-        try:
-            if self._executor and self._node:
-                try:
-                    self._executor.shutdown()
-                except Exception:
-                    pass
-                self._executor.remove_node(self._node)
-                self._node.destroy_node()
-        except Exception:
-            pass
-
-        try:
-            if self._rclpy is not None and self._rclpy.ok():
-                self._rclpy.shutdown()
-        except Exception:
-            pass
+        self._reset_ros_context()
 
         if self.realsense_proc is not None:
             self.realsense_proc.terminate()
@@ -213,3 +200,32 @@ class RosCameraThread(ThreadWithStop):
             print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;92mINFO\033[0m - Subscribed to {self.topic_name}")
         except Exception as exc:
             print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;91mERROR\033[0m - Failed to init ROS2: {exc}")
+
+    def _reset_ros_context(self):
+        """Clean up ROS2 executor/node/context so we can re-init on next loop."""
+        try:
+            if self._executor and self._node:
+                try:
+                    self._executor.remove_node(self._node)
+                except Exception:
+                    pass
+                try:
+                    self._executor.shutdown()
+                except Exception:
+                    pass
+                try:
+                    self._node.destroy_node()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            if self._rclpy is not None and self._rclpy.ok():
+                self._rclpy.shutdown()
+        except Exception:
+            pass
+
+        self._executor = None
+        self._node = None
+        self._rclpy = None
