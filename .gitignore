@@ -66,3 +66,6 @@ temp/**/*.log
 
 # Angular cache
 Brain/src/dashboard/frontend/.angular/
+
+# Temp logs
+Brain/temp/*.log
