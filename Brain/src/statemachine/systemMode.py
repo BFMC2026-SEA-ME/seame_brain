@@ -35,7 +35,7 @@ class SystemMode(Enum):
         "mode": "default",
         "camera": {
             "process": {
-                "enabled": True,
+                "enabled": False,
             },
             "thread": {
                 "resolution": "720p",
@@ -143,7 +143,7 @@ class SystemMode(Enum):
         "mode": "stop",
         "camera": {
             "process": {
-                "enabled": True,
+                "enabled": False,
             },
             "thread": {
                 "resolution": "240p",

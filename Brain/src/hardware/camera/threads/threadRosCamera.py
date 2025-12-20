@@ -4,7 +4,10 @@
 
 import base64
 import time
-from typing import Optional
+from typing import Optional, Tuple
+
+import cv2
+import numpy as np
 
 from src.templates.threadwithstop import ThreadWithStop
 from src.utils.messages.messageHandlerSender import messageHandlerSender
@@ -31,9 +34,11 @@ class RosCameraThread(ThreadWithStop):
         debugging: bool = False,
         topic_name: str = "/camera/camera/color/image_raw/compressed",
         keepalive_sec: float = 0.5,
-        min_frame_interval: float = 0.2,  # 10fps (필요시 0.05=20fps)
+        min_frame_interval: float = 0.2,  # 5fps (필요시 0.05=20fps)
         init_retry_sec: float = 1.0,      # 토픽/ROS 준비 안됐을 때 재시도 간격
         node_name: str = "ros_camera_bridge",
+        downscale_size: Tuple[int, int] | None = (320, 180),  # (width, height). None이면 원본 그대로
+        jpeg_quality: int = 60,  # 낮출수록 용량 감소
     ):
         super(RosCameraThread, self).__init__(pause=0.01)
 
@@ -46,6 +51,8 @@ class RosCameraThread(ThreadWithStop):
         self.min_frame_interval = min_frame_interval
         self.init_retry_sec = init_retry_sec
         self.node_name = node_name
+        self.downscale_size = downscale_size
+        self.jpeg_quality = jpeg_quality
 
         self.serialCameraSender = messageHandlerSender(self.queuesList, serialCamera)
         self.stateChangeSubscriber = messageHandlerSubscriber(
@@ -162,8 +169,26 @@ class RosCameraThread(ThreadWithStop):
                         if now_ts - outer_self._last_send_ts < outer_self.min_frame_interval:
                             return
 
-                        # msg.data: JPEG/PNG 바이트 → 그대로 전달 (base64 불필요)
+                        # msg.data: JPEG/PNG 바이트
                         payload = bytes(msg.data)
+
+                        # 해상도/품질 낮춰서 전송(선택)
+                        if outer_self.downscale_size is not None:
+                            try:
+                                np_arr = np.frombuffer(payload, np.uint8)
+                                img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                                if img is not None:
+                                    resized = cv2.resize(
+                                        img,
+                                        outer_self.downscale_size,
+                                        interpolation=cv2.INTER_AREA,
+                                    )
+                                    encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), outer_self.jpeg_quality]
+                                    ok, encoded = cv2.imencode(".jpg", resized, encode_params)
+                                    if ok:
+                                        payload = encoded.tobytes()
+                            except Exception as exc_down:
+                                print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;93mWARNING\033[0m - downscale failed: {exc_down}")
 
                         serial_sender.send(payload)
 

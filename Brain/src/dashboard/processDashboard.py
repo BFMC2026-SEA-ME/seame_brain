@@ -271,7 +271,10 @@ class processDashboard(WorkerProcess):
 
     def handle_driving_mode(self, dataDict):
         """Handle driving mode change."""
+        # 상태머신 모드 전환
         self.stateMachine.request_mode(f"dashboard_{dataDict['Value']}_button")
+        # 다른 컴포넌트(예: cmd_vel 브릿지)가 DrivingMode를 구독할 수 있도록 큐로도 전파
+        self.send_message_to_brain("DrivingMode", dataDict)
 
 
     def handle_calibration(self, dataDict, socketId):
