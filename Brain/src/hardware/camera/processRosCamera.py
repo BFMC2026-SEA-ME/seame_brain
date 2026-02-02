@@ -38,7 +38,7 @@ class processRosCamera(WorkerProcess):
             self.queuesList,
             self.logging,
             debugging=self.debugging,
-            topic_name="/camera/camera/color/image_raw/compressed",
+            topic_name="/d455f/d455f/color/image_raw/compressed",
             keepalive_sec=0.5,
             min_frame_interval=0.1,  # 10fps, 필요하면 0.05로
             init_retry_sec=1.0,
