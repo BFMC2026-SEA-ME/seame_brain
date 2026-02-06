@@ -121,9 +121,11 @@ class processDashboard(WorkerProcess):
         # heartbeat
         self.heartbeat_last_sent = time.time()
         self.heartbeat_retries = 0
-        self.heartbeat_max_retries = 3
-        self.heartbeat_time_between_heartbeats = 20 # seconds
-        self.heartbeat_time_between_retries = 5 # seconds # put a higher value if the connection is not stable (e.g. 5 seconds)
+        # Heartbeat is used to detect stale sessions. Keep these values forgiving
+        # to tolerate background tabs / CPU spikes.
+        self.heartbeat_max_retries = 6
+        self.heartbeat_time_between_heartbeats = 60 # seconds
+        self.heartbeat_time_between_retries = 10 # seconds
         self.heartbeat_received = False
 
         # session management
@@ -171,6 +173,7 @@ class processDashboard(WorkerProcess):
         self.socketio.on_event('message', self.handle_message)
         self.socketio.on_event('save', self.handle_save_table_state)
         self.socketio.on_event('load', self.handle_load_table_state)
+        self.socketio.on_event('disconnect', self.handle_disconnect)
     
     
     def _start_background_tasks(self):
@@ -305,6 +308,14 @@ class processDashboard(WorkerProcess):
 
     def handle_session_end(self, socketId):
         """Handle session end for the single user."""
+        if self.sessionActive and self.activeUser == socketId:
+            self.sessionActive = False
+            self.activeUser = None
+
+
+    def handle_disconnect(self):
+        """Handle client disconnect to release session ownership."""
+        socketId = request.sid
         if self.sessionActive and self.activeUser == socketId:
             self.sessionActive = False
             self.activeUser = None
