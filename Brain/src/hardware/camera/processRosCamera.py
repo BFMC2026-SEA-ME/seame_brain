@@ -13,12 +13,31 @@ if __name__ == "__main__":
     sys.path.insert(0, "../../..")
 
 import time
+import os
 
 from src.templates.workerprocess import WorkerProcess
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.allMessages import StateChange
 from src.statemachine.systemMode import SystemMode
 from src.hardware.camera.threads.threadRosCamera import RosCameraThread
+
+# ============================ CAMERA CONFIG ============================
+# Choose one of the available topics.
+# Default: compressed stream for low CPU usage.
+ROS_CAMERA_TOPIC = os.getenv(
+    "ROS_CAMERA_TOPIC",
+    "/d455f/d455f/color/image_raw/compressed",
+)
+
+# Max FPS to push into the system. Lower = less load / less queue pressure.
+ROS_CAMERA_MAX_FPS = float(os.getenv("ROS_CAMERA_MAX_FPS", "10"))
+
+# Keepalive resend interval (only used when no new frames are coming).
+ROS_CAMERA_KEEPALIVE_SEC = float(os.getenv("ROS_CAMERA_KEEPALIVE_SEC", "1.0"))
+
+# If True and using /compressed topics, forward bytes as-is (no decode/resize).
+# This minimizes CPU and prevents queue buildup from expensive re-encoding.
+ROS_CAMERA_PASSTHROUGH = os.getenv("ROS_CAMERA_PASSTHROUGH", "1") == "1"
 
 
 class processRosCamera(WorkerProcess):
@@ -34,14 +53,21 @@ class processRosCamera(WorkerProcess):
         super(processRosCamera, self).__init__(self.queuesList, ready_event)
 
     def _init_threads(self):
+        min_frame_interval = 0.0
+        if ROS_CAMERA_MAX_FPS > 0:
+            min_frame_interval = 1.0 / ROS_CAMERA_MAX_FPS
+
         cam_thread = RosCameraThread(
             self.queuesList,
             self.logging,
             debugging=self.debugging,
-            topic_name="/d455f/d455f/color/image_raw/compressed",
-            keepalive_sec=0.5,
-            min_frame_interval=0.1,  # 10fps, 필요하면 0.05로
+            topic_name=ROS_CAMERA_TOPIC,
+            keepalive_sec=ROS_CAMERA_KEEPALIVE_SEC,
+            min_frame_interval=min_frame_interval,
             init_retry_sec=1.0,
+            passthrough_compressed=ROS_CAMERA_PASSTHROUGH,
+            downscale_size=None if ROS_CAMERA_PASSTHROUGH else (320, 180),
+            jpeg_quality=60,
         )
         self.threads.append(cam_thread)
 

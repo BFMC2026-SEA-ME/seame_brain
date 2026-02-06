@@ -39,6 +39,7 @@ class RosCameraThread(ThreadWithStop):
         node_name: str = "ros_camera_bridge",
         downscale_size: Tuple[int, int] | None = (320, 180),  # (width, height). None이면 원본 그대로
         jpeg_quality: int = 60,  # 낮출수록 용량 감소
+        passthrough_compressed: bool = True,
     ):
         super(RosCameraThread, self).__init__(pause=0.01)
 
@@ -53,18 +54,25 @@ class RosCameraThread(ThreadWithStop):
         self.node_name = node_name
         self.downscale_size = downscale_size
         self.jpeg_quality = jpeg_quality
+        self.passthrough_compressed = passthrough_compressed
 
         self.serialCameraSender = messageHandlerSender(self.queuesList, serialCamera)
         self.stateChangeSubscriber = messageHandlerSubscriber(
             self.queuesList, StateChange, "lastOnly", True
         )
 
+        self._compressed_topic = (
+            self.topic_name.endswith("/compressed")
+            or self.topic_name.endswith("/compressedDepth")
+        )
+        self._unsupported_topic_logged = False
+
         self._ros_import_error = False
         self._rclpy = None
         self._executor = None
         self._node = None
 
-        self._last_payload: Optional[str] = None
+        self._last_payload: Optional[bytes] = None
         self._last_emit_ts: float = 0.0
         self._last_send_ts: float = 0.0
         self._last_init_try_ts: float = 0.0
@@ -136,6 +144,16 @@ class RosCameraThread(ThreadWithStop):
             self._ros_import_error = True
             return
 
+        if not self._compressed_topic:
+            if not self._unsupported_topic_logged:
+                print(
+                    f"\033[1;97m[ RosCamera ] :\033[0m \033[1;93mWARNING\033[0m - "
+                    f"Unsupported topic type for now: {self.topic_name}. "
+                    "Use a /compressed topic to avoid heavy CPU load."
+                )
+                self._unsupported_topic_logged = True
+            return
+
         try:
             if not rclpy.ok():
                 rclpy.init(args=None)
@@ -173,7 +191,7 @@ class RosCameraThread(ThreadWithStop):
                         payload = bytes(msg.data)
 
                         # 해상도/품질 낮춰서 전송(선택)
-                        if outer_self.downscale_size is not None:
+                        if not outer_self.passthrough_compressed and outer_self.downscale_size is not None:
                             try:
                                 np_arr = np.frombuffer(payload, np.uint8)
                                 img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
