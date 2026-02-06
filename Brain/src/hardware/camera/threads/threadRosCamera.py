@@ -32,7 +32,7 @@ class RosCameraThread(ThreadWithStop):
         queuesList,
         logger,
         debugging: bool = False,
-        topic_name: str = "/camera/camera/color/image_raw/compressed",
+        topic_name: str = "/d455f/d455f/color/image_raw/compressed",
         keepalive_sec: float = 0.5,
         min_frame_interval: float = 0.2,  # 5fps (필요시 0.05=20fps)
         init_retry_sec: float = 1.0,      # 토픽/ROS 준비 안됐을 때 재시도 간격
