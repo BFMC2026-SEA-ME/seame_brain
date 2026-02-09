@@ -275,9 +275,9 @@ class threadRead(ThreadWithStop):
                     }
                     self.imuDataSender.send(str(data))
                     try:
-                        roll = float(splittedValue[0])
-                        pitch = float(splittedValue[1])
-                        yaw = float(splittedValue[2])
+                        roll = math.radians(float(splittedValue[0]))
+                        pitch = math.radians(float(splittedValue[1]))
+                        yaw = math.radians(float(splittedValue[2]))
                         accelx = float(splittedValue[3])
                         accely = float(splittedValue[4])
                         accelz = float(splittedValue[5])
