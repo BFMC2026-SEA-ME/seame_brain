@@ -26,7 +26,6 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 import logging
-import math
 import time
 import threading
 import re
@@ -57,14 +56,14 @@ try:
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-    from sensor_msgs.msg import Imu
+    from std_msgs.msg import String
 except Exception:  # allow running without ROS2 deps
     rclpy = None
     Node = None
     QoSHistoryPolicy = None
     QoSProfile = None
     QoSReliabilityPolicy = None
-    Imu = None
+    String = None
 
 
 class threadRead(ThreadWithStop):
@@ -107,13 +106,12 @@ class threadRead(ThreadWithStop):
         self._imu_pub = None
         self._ros_import_warned = False
         self._imu_topic = "/Imu"
-        self._imu_frame_id = "imu"
 
     def _init_ros(self):
         if self._ros_node is not None and self._imu_pub is not None:
             return True
 
-        if rclpy is None or Imu is None:
+        if rclpy is None or String is None:
             if not self._ros_import_warned:
                 print("[SerialHandler] ROS2 IMU publish disabled (missing rclpy/sensor_msgs).")
                 self._ros_import_warned = True
@@ -129,7 +127,7 @@ class threadRead(ThreadWithStop):
                 depth=1,
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
             )
-            self._imu_pub = self._ros_node.create_publisher(Imu, self._imu_topic, qos)
+            self._imu_pub = self._ros_node.create_publisher(String, self._imu_topic, qos)
             return True
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU init failed: {exc}")
@@ -152,47 +150,12 @@ class threadRead(ThreadWithStop):
             except Exception:
                 pass
 
-    def _euler_to_quaternion(self, roll, pitch, yaw):
-        cr = math.cos(roll * 0.5)
-        sr = math.sin(roll * 0.5)
-        cp = math.cos(pitch * 0.5)
-        sp = math.sin(pitch * 0.5)
-        cy = math.cos(yaw * 0.5)
-        sy = math.sin(yaw * 0.5)
-
-        qw = cr * cp * cy + sr * sp * sy
-        qx = sr * cp * cy - cr * sp * sy
-        qy = cr * sp * cy + sr * cp * sy
-        qz = cr * cp * sy - sr * sp * cy
-        return qx, qy, qz, qw
-
-    def _publish_imu(self, roll, pitch, yaw, accelx, accely, accelz):
+    def _publish_imu_raw(self, data_str):
         if not self._init_ros():
             return
 
-        msg = Imu()
-        msg.header.stamp = self._ros_node.get_clock().now().to_msg()
-        msg.header.frame_id = self._imu_frame_id
-
-        qx, qy, qz, qw = self._euler_to_quaternion(roll, pitch, yaw)
-        msg.orientation.x = qx
-        msg.orientation.y = qy
-        msg.orientation.z = qz
-        msg.orientation.w = qw
-        msg.orientation_covariance = [0.0] * 9
-
-        msg.angular_velocity.x = 0.0
-        msg.angular_velocity.y = 0.0
-        msg.angular_velocity.z = 0.0
-        msg.angular_velocity_covariance = [-1.0, 0.0, 0.0,
-                                           0.0, 0.0, 0.0,
-                                           0.0, 0.0, 0.0]
-
-        msg.linear_acceleration.x = accelx
-        msg.linear_acceleration.y = accely
-        msg.linear_acceleration.z = accelz
-        msg.linear_acceleration_covariance = [0.0] * 9
-
+        msg = String()
+        msg.data = data_str
         try:
             self._imu_pub.publish(msg)
         except Exception as exc:
@@ -273,17 +236,9 @@ class threadRead(ThreadWithStop):
                         "accely": splittedValue[4],
                         "accelz": splittedValue[5],
                     }
-                    self.imuDataSender.send(str(data))
-                    try:
-                        roll = math.radians(float(splittedValue[0]))
-                        pitch = math.radians(float(splittedValue[1]))
-                        yaw = math.radians(float(splittedValue[2]))
-                        accelx = float(splittedValue[3])
-                        accely = float(splittedValue[4])
-                        accelz = float(splittedValue[5])
-                        self._publish_imu(roll, pitch, yaw, accelx, accely, accelz)
-                    except Exception:
-                        pass
+                    data_str = str(data)
+                    self.imuDataSender.send(data_str)
+                    self._publish_imu_raw(data_str)
                 else:
                     self.imuAckSender.send(splittedValue[0])
 
