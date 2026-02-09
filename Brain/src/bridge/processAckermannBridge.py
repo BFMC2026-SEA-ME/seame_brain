@@ -7,6 +7,8 @@ When AUTO mode is activated on the dashboard, this node reads
 ackermann_msgs/AckermannDriveStamped messages (default: `/ackermann_cmd`)
 and converts them to the SpeedMotor/SteerMotor queue updates consumed by `threadWrite`.
 """
+# speed : 값 그대로
+# steer : -0.436 ~ 0.436(rad)(25도정도 ) + 우회전, -좌회전
 
 from __future__ import annotations
 
@@ -57,10 +59,10 @@ class AckermannBridgeNode(Node):
 
         # Conversion / limits
         self.declare_parameter("speed_scale", 10.0)      # m/s -> motor cmd
-        self.declare_parameter("steer_scale", 250.0)     # rad(or deg) -> motor cmd
+        self.declare_parameter("steer_scale", 10.0)     # rad(or deg) -> motor cmd
         self.declare_parameter("steer_limit", 250)
         self.declare_parameter("steer_invert", False)    # 되도록 False 유지
-        self.declare_parameter("steer_use_degrees", False)  # True면 rad->deg 후 scale
+        self.declare_parameter("steer_use_degrees", True)  # True면 rad->deg 후 scale ; rad 값을 deg로 변환후 스케일
 
         self._ackermann_topic = str(self.get_parameter("ackermann_topic").value)
         self._speed_scale = float(self.get_parameter("speed_scale").value)
@@ -132,7 +134,7 @@ class AckermannBridgeNode(Node):
     def _scale_steer(self, steering_angle: float) -> str:
         # ROS Ackermann convention: + = left
         # Hardware: + = right  => flip sign once here
-        steer_value = -steering_angle
+        steer_value = steering_angle # +일때 오른쪽, -일때 왼쪽으로 가도록 (하드웨어에 맞게)
 
         # Optional: convert to degrees before scaling
         if self._steer_use_degrees:
