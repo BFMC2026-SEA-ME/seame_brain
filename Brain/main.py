@@ -50,7 +50,8 @@ ENABLE_CAMERA = True
 ENABLE_SEMAPHORES = False
 ENABLE_TRAFFIC_COM = False
 ENABLE_SERIAL_HANDLER = True
-ENABLE_CMDVELBRIDGE = True
+ENABLE_CMDVELBRIDGE = False
+ENABLE_ACKERMAN = True
 
 # Pin to CPU cores 0–3
 # 프로세르를 모든 cpu 코어에 고정
@@ -88,6 +89,7 @@ from src.statemachine.systemMode import SystemMode
 # ------ New component imports starts here ------#
 from src.hardware.camera.processRosCamera import processRosCamera
 from src.bridge.processCmdbrdige import create_cmd_vel_bridge_process
+from src.bridge.processAckermannBridge import create_ackermann_bridge_process
 
 # ------ New component imports ends here ------#
 
@@ -197,6 +199,13 @@ else:
     processCmdVelBridge = None
     cmdvel_bridge_ready.set()
     
+# Initializing Ackermann steering bridge
+ackermann_bridge_ready = Event()
+if ENABLE_ACKERMAN:
+    processAckermannBridge = create_ackermann_bridge_process(queueList, ready_event=ackermann_bridge_ready)
+else:
+    processAckermannBridge = None
+    ackermann_bridge_ready.set()
 
 # Adding all processes to the list
 for proc, ready_event in [
@@ -206,6 +215,7 @@ for proc, ready_event in [
     (processSerialHandler, serial_handler_ready),
     (processDashboard, dashboard_ready),
     (processCmdVelBridge, cmdvel_bridge_ready),
+    (processAckermannBridge, ackermann_bridge_ready),
 ]:
     if proc is not None:
         allProcesses.append(proc)
