@@ -26,6 +26,7 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 import logging
+import math
 import time
 import threading
 import re
@@ -52,6 +53,19 @@ from src.utils.messages.allMessages import (
 )
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 
+try:
+    import rclpy
+    from rclpy.node import Node
+    from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+    from sensor_msgs.msg import Imu
+except Exception:  # allow running without ROS2 deps
+    rclpy = None
+    Node = None
+    QoSHistoryPolicy = None
+    QoSProfile = None
+    QoSReliabilityPolicy = None
+    Imu = None
+
 
 class threadRead(ThreadWithStop):
     """This thread read the data that NUCLEO send to Raspberry PI.\n
@@ -73,6 +87,7 @@ class threadRead(ThreadWithStop):
         self.debugger = debugger
         self.event = threading.Event()
         self._init_senders()
+        self._init_ros_state()
 
         self.expectedValues = {"kl": "0, 15 or 30", "instant": "1 or 0", "battery": "1 or 0",
                                "resourceMonitor": "1 or 0", "imu": "1 or 0", "steer" : "between -25 and 25",
@@ -86,6 +101,102 @@ class threadRead(ThreadWithStop):
         self.error_cooldown = timedelta(seconds=3)
 
         self.queue_sending()
+
+    def _init_ros_state(self):
+        self._ros_node = None
+        self._imu_pub = None
+        self._ros_import_warned = False
+        self._imu_topic = "/Imu"
+        self._imu_frame_id = "imu"
+
+    def _init_ros(self):
+        if self._ros_node is not None and self._imu_pub is not None:
+            return True
+
+        if rclpy is None or Imu is None:
+            if not self._ros_import_warned:
+                print("[SerialHandler] ROS2 IMU publish disabled (missing rclpy/sensor_msgs).")
+                self._ros_import_warned = True
+            return False
+
+        try:
+            if not rclpy.ok():
+                rclpy.init(args=None)
+
+            self._ros_node = Node("imu_serial_bridge")
+            qos = QoSProfile(
+                history=QoSHistoryPolicy.KEEP_LAST,
+                depth=1,
+                reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            )
+            self._imu_pub = self._ros_node.create_publisher(Imu, self._imu_topic, qos)
+            return True
+        except Exception as exc:
+            print(f"[SerialHandler] ROS2 IMU init failed: {exc}")
+            self._ros_node = None
+            self._imu_pub = None
+            return False
+
+    def _shutdown_ros(self):
+        if self._ros_node is None:
+            return
+        try:
+            self._ros_node.destroy_node()
+        except Exception:
+            pass
+        self._ros_node = None
+        self._imu_pub = None
+        if rclpy is not None and rclpy.ok():
+            try:
+                rclpy.shutdown()
+            except Exception:
+                pass
+
+    def _euler_to_quaternion(self, roll, pitch, yaw):
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cy = math.cos(yaw * 0.5)
+        sy = math.sin(yaw * 0.5)
+
+        qw = cr * cp * cy + sr * sp * sy
+        qx = sr * cp * cy - cr * sp * sy
+        qy = cr * sp * cy + sr * cp * sy
+        qz = cr * cp * sy - sr * sp * cy
+        return qx, qy, qz, qw
+
+    def _publish_imu(self, roll, pitch, yaw, accelx, accely, accelz):
+        if not self._init_ros():
+            return
+
+        msg = Imu()
+        msg.header.stamp = self._ros_node.get_clock().now().to_msg()
+        msg.header.frame_id = self._imu_frame_id
+
+        qx, qy, qz, qw = self._euler_to_quaternion(roll, pitch, yaw)
+        msg.orientation.x = qx
+        msg.orientation.y = qy
+        msg.orientation.z = qz
+        msg.orientation.w = qw
+        msg.orientation_covariance = [0.0] * 9
+
+        msg.angular_velocity.x = 0.0
+        msg.angular_velocity.y = 0.0
+        msg.angular_velocity.z = 0.0
+        msg.angular_velocity_covariance = [-1.0, 0.0, 0.0,
+                                           0.0, 0.0, 0.0,
+                                           0.0, 0.0, 0.0]
+
+        msg.linear_acceleration.x = accelx
+        msg.linear_acceleration.y = accely
+        msg.linear_acceleration.z = accelz
+        msg.linear_acceleration_covariance = [0.0] * 9
+
+        try:
+            self._imu_pub.publish(msg)
+        except Exception as exc:
+            print(f"[SerialHandler] ROS2 IMU publish failed: {exc}")
 
     def _init_senders(self):
         self.enableButtonSender = messageHandlerSender(self.queuesList, EnableButton)
@@ -163,6 +274,16 @@ class threadRead(ThreadWithStop):
                         "accelz": splittedValue[5],
                     }
                     self.imuDataSender.send(str(data))
+                    try:
+                        roll = float(splittedValue[0])
+                        pitch = float(splittedValue[1])
+                        yaw = float(splittedValue[2])
+                        accelx = float(splittedValue[3])
+                        accely = float(splittedValue[4])
+                        accelz = float(splittedValue[5])
+                        self._publish_imu(roll, pitch, yaw, accelx, accely, accelz)
+                    except Exception:
+                        pass
                 else:
                     self.imuAckSender.send(splittedValue[0])
 
@@ -256,3 +377,7 @@ class threadRead(ThreadWithStop):
             self.last_error_time = now
             return True
         return False
+
+    def stop(self):
+        self._shutdown_ros()
+        super(threadRead, self).stop()
