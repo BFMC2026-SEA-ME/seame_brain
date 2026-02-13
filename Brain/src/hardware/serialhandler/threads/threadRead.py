@@ -223,8 +223,12 @@ class threadRead(ThreadWithStop):
         if '@' in buff and ':' in buff:
             action, value = buff.split(":", 1) 
             action = action[1:]
+            action_lower = action.lower()
             if self.debugger:
                 self.logger.info(buff)
+
+            if action_lower in ("encoder", "enc") or action_lower.startswith("enc"):
+                self._log_encoder(buff, value)
 
             if action == "imu":
                 splittedValue = value.split(";")
@@ -256,9 +260,6 @@ class threadRead(ThreadWithStop):
                 steer = value.split(",")[0]
                 if (lambda v: (lambda: float(v), True)[1] if isinstance(v, str) else False)(steer):
                     self.currentSteerSender.send(float(steer))
-
-            elif action in ("encoder", "enc"):
-                self._log_encoder(buff, value)
 
             elif action == "vcdCalib":
                 splittedValue = value.split(";")
@@ -314,10 +315,9 @@ class threadRead(ThreadWithStop):
             return
         msg = f"[ENCODER] raw={raw_msg} value={value}"
         try:
+            print(msg)
             if self.logger:
                 self.logger.info(msg)
-            else:
-                print(msg)
         except Exception:
             pass
 
