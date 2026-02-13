@@ -56,7 +56,7 @@ try:
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-    from std_msgs.msg import String
+    from std_msgs.msg import String, Float32MultiArray
 except Exception:  # allow running without ROS2 deps
     rclpy = None
     Node = None
@@ -64,6 +64,7 @@ except Exception:  # allow running without ROS2 deps
     QoSProfile = None
     QoSReliabilityPolicy = None
     String = None
+    Float32MultiArray = None
 
 
 class threadRead(ThreadWithStop):
@@ -105,13 +106,16 @@ class threadRead(ThreadWithStop):
     def _init_ros_state(self):
         self._ros_node = None
         self._imu_pub = None
-        self._encoder_pub = None
+        self._encoder_pub_raw = None
+        self._encoder_pub_parsed = None
         self._ros_import_warned = False
         self._imu_topic = "/Imu"
         self._encoder_topic = "/WheelEncoder"
+        self._encoder_parsed_topic = "/WheelEncoderParsed"
 
     def _init_ros(self):
-        if self._ros_node is not None and self._imu_pub is not None and self._encoder_pub is not None:
+        if (self._ros_node is not None and self._imu_pub is not None
+                and self._encoder_pub_raw is not None):
             return True
 
         if rclpy is None or String is None:
@@ -131,12 +135,18 @@ class threadRead(ThreadWithStop):
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
             )
             self._imu_pub = self._ros_node.create_publisher(String, self._imu_topic, qos)
-            self._encoder_pub = self._ros_node.create_publisher(String, self._encoder_topic, qos)
+            self._encoder_pub_raw = self._ros_node.create_publisher(String, self._encoder_topic, qos)
+            if Float32MultiArray is not None:
+                self._encoder_pub_parsed = self._ros_node.create_publisher(
+                    Float32MultiArray, self._encoder_parsed_topic, qos
+                )
             return True
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU init failed: {exc}")
             self._ros_node = None
             self._imu_pub = None
+            self._encoder_pub_raw = None
+            self._encoder_pub_parsed = None
             return False
 
     def _shutdown_ros(self):
@@ -148,7 +158,8 @@ class threadRead(ThreadWithStop):
             pass
         self._ros_node = None
         self._imu_pub = None
-        self._encoder_pub = None
+        self._encoder_pub_raw = None
+        self._encoder_pub_parsed = None
         if rclpy is not None and rclpy.ok():
             try:
                 rclpy.shutdown()
@@ -173,9 +184,31 @@ class threadRead(ThreadWithStop):
         msg = String()
         msg.data = data_str
         try:
-            self._encoder_pub.publish(msg)
+            if self._encoder_pub_raw is not None:
+                self._encoder_pub_raw.publish(msg)
         except Exception as exc:
             print(f"[SerialHandler] ROS2 encoder publish failed: {exc}")
+
+    def _publish_encoder_parsed(self, values):
+        if not self._init_ros():
+            return
+        if self._encoder_pub_parsed is None or Float32MultiArray is None:
+            return
+        msg = Float32MultiArray()
+        msg.data = values
+        try:
+            self._encoder_pub_parsed.publish(msg)
+        except Exception as exc:
+            print(f"[SerialHandler] ROS2 encoder parsed publish failed: {exc}")
+
+    def _parse_encoder_values(self, value):
+        parts = [p.strip() for p in value.split(";") if p.strip() != ""]
+        if len(parts) < 3:
+            return None
+        try:
+            return [float(parts[0]), float(parts[1]), float(parts[2])]
+        except ValueError:
+            return None
 
     def _init_senders(self):
         self.enableButtonSender = messageHandlerSender(self.queuesList, EnableButton)
@@ -245,6 +278,9 @@ class threadRead(ThreadWithStop):
             if action_lower in ("encoder", "enc") or action_lower.startswith("enc"):
                 self._log_encoder(buff, value)
                 self._publish_encoder_raw(value)
+                parsed = self._parse_encoder_values(value)
+                if parsed is not None:
+                    self._publish_encoder_parsed(parsed)
 
             if action == "imu":
                 splittedValue = value.split(";")
