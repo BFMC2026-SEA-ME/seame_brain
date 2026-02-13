@@ -221,7 +221,7 @@ class threadRead(ThreadWithStop):
         """This function select which type of message we receive from NUCLEO and send the data further."""
 
         if '@' in buff and ':' in buff:
-            action, value = buff.split(":") 
+            action, value = buff.split(":", 1) 
             action = action[1:]
             if self.debugger:
                 self.logger.info(buff)
