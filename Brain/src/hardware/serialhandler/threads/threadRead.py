@@ -105,11 +105,13 @@ class threadRead(ThreadWithStop):
     def _init_ros_state(self):
         self._ros_node = None
         self._imu_pub = None
+        self._encoder_pub = None
         self._ros_import_warned = False
         self._imu_topic = "/Imu"
+        self._encoder_topic = "/WheelEncoder"
 
     def _init_ros(self):
-        if self._ros_node is not None and self._imu_pub is not None:
+        if self._ros_node is not None and self._imu_pub is not None and self._encoder_pub is not None:
             return True
 
         if rclpy is None or String is None:
@@ -129,6 +131,7 @@ class threadRead(ThreadWithStop):
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
             )
             self._imu_pub = self._ros_node.create_publisher(String, self._imu_topic, qos)
+            self._encoder_pub = self._ros_node.create_publisher(String, self._encoder_topic, qos)
             return True
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU init failed: {exc}")
@@ -145,6 +148,7 @@ class threadRead(ThreadWithStop):
             pass
         self._ros_node = None
         self._imu_pub = None
+        self._encoder_pub = None
         if rclpy is not None and rclpy.ok():
             try:
                 rclpy.shutdown()
@@ -161,6 +165,17 @@ class threadRead(ThreadWithStop):
             self._imu_pub.publish(msg)
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU publish failed: {exc}")
+
+    def _publish_encoder_raw(self, data_str):
+        if not self._init_ros():
+            return
+
+        msg = String()
+        msg.data = data_str
+        try:
+            self._encoder_pub.publish(msg)
+        except Exception as exc:
+            print(f"[SerialHandler] ROS2 encoder publish failed: {exc}")
 
     def _init_senders(self):
         self.enableButtonSender = messageHandlerSender(self.queuesList, EnableButton)
@@ -229,6 +244,7 @@ class threadRead(ThreadWithStop):
 
             if action_lower in ("encoder", "enc") or action_lower.startswith("enc"):
                 self._log_encoder(buff, value)
+                self._publish_encoder_raw(value)
 
             if action == "imu":
                 splittedValue = value.split(";")
