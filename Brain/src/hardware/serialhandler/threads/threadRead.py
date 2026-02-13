@@ -84,6 +84,7 @@ class threadRead(ThreadWithStop):
         self.queuesList = queueList
         self.logger = logger
         self.debugger = debugger
+        self.debug_encoder = os.getenv("SERIAL_DEBUG_ENCODER", "").lower() in ("1", "true", "yes", "y")
         self.event = threading.Event()
         self._init_senders()
         self._init_ros_state()
@@ -256,6 +257,9 @@ class threadRead(ThreadWithStop):
                 if (lambda v: (lambda: float(v), True)[1] if isinstance(v, str) else False)(steer):
                     self.currentSteerSender.send(float(steer))
 
+            elif action in ("encoder", "enc"):
+                self._log_encoder(buff, value)
+
             elif action == "vcdCalib":
                 splittedValue = value.split(";")
                 speedPWM = splittedValue[0]
@@ -304,6 +308,19 @@ class threadRead(ThreadWithStop):
                 self.event.wait(3)
                 os.system("sudo shutdown -h now")
             
+    def _log_encoder(self, raw_msg, value):
+        """Log raw encoder payload for debugging when enabled."""
+        if not (self.debug_encoder or self.debugger):
+            return
+        msg = f"[ENCODER] raw={raw_msg} value={value}"
+        try:
+            if self.logger:
+                self.logger.info(msg)
+            else:
+                print(msg)
+        except Exception:
+            pass
+
     def check_valid_value(self, action, message):
         if message == "syntax error":
             print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m - Invalid \033[94m{action.upper()}\033[0m value (expected {self.expectedValues[action]})")
