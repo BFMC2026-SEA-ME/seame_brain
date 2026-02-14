@@ -30,6 +30,7 @@ import time
 import threading
 import re
 import os
+import math
 import serial
 from datetime import datetime, timedelta
 
@@ -56,7 +57,8 @@ try:
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-    from std_msgs.msg import String, Float32MultiArray
+    from std_msgs.msg import String
+    from nav_msgs.msg import Odometry
 except Exception:  # allow running without ROS2 deps
     rclpy = None
     Node = None
@@ -64,7 +66,7 @@ except Exception:  # allow running without ROS2 deps
     QoSProfile = None
     QoSReliabilityPolicy = None
     String = None
-    Float32MultiArray = None
+    Odometry = None
 
 
 class threadRead(ThreadWithStop):
@@ -106,16 +108,15 @@ class threadRead(ThreadWithStop):
     def _init_ros_state(self):
         self._ros_node = None
         self._imu_pub = None
-        self._encoder_pub_raw = None
-        self._encoder_pub_parsed = None
+        self._odom_pub = None
         self._ros_import_warned = False
         self._imu_topic = "/Imu"
-        self._encoder_topic = "/WheelEncoder"
-        self._encoder_parsed_topic = "/WheelEncoderParsed"
+        self._odom_topic = "/odom"
+        self._odom_frame = "odom"
+        self._base_frame = "base_link"
 
     def _init_ros(self):
-        if (self._ros_node is not None and self._imu_pub is not None
-                and self._encoder_pub_raw is not None):
+        if self._ros_node is not None and self._imu_pub is not None:
             return True
 
         if rclpy is None or String is None:
@@ -135,11 +136,8 @@ class threadRead(ThreadWithStop):
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
             )
             self._imu_pub = self._ros_node.create_publisher(String, self._imu_topic, qos)
-            self._encoder_pub_raw = self._ros_node.create_publisher(String, self._encoder_topic, qos)
-            if Float32MultiArray is not None:
-                self._encoder_pub_parsed = self._ros_node.create_publisher(
-                    Float32MultiArray, self._encoder_parsed_topic, qos
-                )
+            if Odometry is not None:
+                self._odom_pub = self._ros_node.create_publisher(Odometry, self._odom_topic, qos)
             return True
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU init failed: {exc}")
@@ -158,8 +156,7 @@ class threadRead(ThreadWithStop):
             pass
         self._ros_node = None
         self._imu_pub = None
-        self._encoder_pub_raw = None
-        self._encoder_pub_parsed = None
+        self._odom_pub = None
         if rclpy is not None and rclpy.ok():
             try:
                 rclpy.shutdown()
@@ -177,29 +174,42 @@ class threadRead(ThreadWithStop):
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU publish failed: {exc}")
 
-    def _publish_encoder_raw(self, data_str):
+    def _publish_odom_from_encoder(self, values):
         if not self._init_ros():
             return
-
-        msg = String()
-        msg.data = data_str
-        try:
-            if self._encoder_pub_raw is not None:
-                self._encoder_pub_raw.publish(msg)
-        except Exception as exc:
-            print(f"[SerialHandler] ROS2 encoder publish failed: {exc}")
-
-    def _publish_encoder_parsed(self, values):
-        if not self._init_ros():
+        if self._odom_pub is None or Odometry is None:
             return
-        if self._encoder_pub_parsed is None or Float32MultiArray is None:
-            return
-        msg = Float32MultiArray()
-        msg.data = values
+
+        rpm, velocity, distance = values
+        msg = Odometry()
         try:
-            self._encoder_pub_parsed.publish(msg)
+            msg.header.stamp = self._ros_node.get_clock().now().to_msg()
+        except Exception:
+            pass
+        msg.header.frame_id = self._odom_frame
+        msg.child_frame_id = self._base_frame
+
+        msg.pose.pose.position.x = distance
+        msg.pose.pose.position.y = 0.0
+        msg.pose.pose.position.z = 0.0
+        msg.pose.pose.orientation.x = 0.0
+        msg.pose.pose.orientation.y = 0.0
+        msg.pose.pose.orientation.z = 0.0
+        msg.pose.pose.orientation.w = 1.0
+
+        msg.twist.twist.linear.x = velocity
+        msg.twist.twist.linear.y = 0.0
+        msg.twist.twist.linear.z = 0.0
+
+        # Use wheel RPM as angular velocity (converted to rad/s).
+        msg.twist.twist.angular.x = 0.0
+        msg.twist.twist.angular.y = 0.0
+        msg.twist.twist.angular.z = rpm * (2.0 * math.pi / 60.0)
+
+        try:
+            self._odom_pub.publish(msg)
         except Exception as exc:
-            print(f"[SerialHandler] ROS2 encoder parsed publish failed: {exc}")
+            print(f"[SerialHandler] ROS2 odom publish failed: {exc}")
 
     def _parse_encoder_values(self, value):
         parts = [p.strip() for p in value.split(";") if p.strip() != ""]
@@ -277,10 +287,9 @@ class threadRead(ThreadWithStop):
 
             if action_lower in ("encoder", "enc") or action_lower.startswith("enc"):
                 self._log_encoder(buff, value)
-                self._publish_encoder_raw(value)
                 parsed = self._parse_encoder_values(value)
                 if parsed is not None:
-                    self._publish_encoder_parsed(parsed)
+                    self._publish_odom_from_encoder(parsed)
 
             if action == "imu":
                 splittedValue = value.split(";")
