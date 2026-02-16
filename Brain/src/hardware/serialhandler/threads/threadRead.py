@@ -30,7 +30,6 @@ import time
 import threading
 import re
 import os
-import math
 import serial
 from datetime import datetime, timedelta
 
@@ -58,7 +57,7 @@ try:
     from rclpy.node import Node
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from std_msgs.msg import String
-    from nav_msgs.msg import Odometry
+    from geometry_msgs.msg import Vector3Stamped
 except Exception:  # allow running without ROS2 deps
     rclpy = None
     Node = None
@@ -66,7 +65,7 @@ except Exception:  # allow running without ROS2 deps
     QoSProfile = None
     QoSReliabilityPolicy = None
     String = None
-    Odometry = None
+    Vector3Stamped = None
 
 
 class threadRead(ThreadWithStop):
@@ -108,12 +107,11 @@ class threadRead(ThreadWithStop):
     def _init_ros_state(self):
         self._ros_node = None
         self._imu_pub = None
-        self._odom_pub = None
+        self._wheel_pub = None
         self._ros_import_warned = False
         self._imu_topic = "/Imu"
-        self._odom_topic = "/odom"
-        self._odom_frame = "odom"
-        self._base_frame = "base_link"
+        self._wheel_topic = "/wheel_encoder"
+        self._wheel_frame = "base_link"
 
     def _init_ros(self):
         if self._ros_node is not None and self._imu_pub is not None:
@@ -121,7 +119,7 @@ class threadRead(ThreadWithStop):
 
         if rclpy is None or String is None:
             if not self._ros_import_warned:
-                print("[SerialHandler] ROS2 IMU publish disabled (missing rclpy/sensor_msgs).")
+                print("[SerialHandler] ROS2 publish disabled (missing rclpy/std_msgs/geometry_msgs).")
                 self._ros_import_warned = True
             return False
 
@@ -136,15 +134,14 @@ class threadRead(ThreadWithStop):
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
             )
             self._imu_pub = self._ros_node.create_publisher(String, self._imu_topic, qos)
-            if Odometry is not None:
-                self._odom_pub = self._ros_node.create_publisher(Odometry, self._odom_topic, qos)
+            if Vector3Stamped is not None:
+                self._wheel_pub = self._ros_node.create_publisher(Vector3Stamped, self._wheel_topic, qos)
             return True
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU init failed: {exc}")
             self._ros_node = None
             self._imu_pub = None
-            self._encoder_pub_raw = None
-            self._encoder_pub_parsed = None
+            self._wheel_pub = None
             return False
 
     def _shutdown_ros(self):
@@ -156,7 +153,7 @@ class threadRead(ThreadWithStop):
             pass
         self._ros_node = None
         self._imu_pub = None
-        self._odom_pub = None
+        self._wheel_pub = None
         if rclpy is not None and rclpy.ok():
             try:
                 rclpy.shutdown()
@@ -174,42 +171,29 @@ class threadRead(ThreadWithStop):
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU publish failed: {exc}")
 
-    def _publish_odom_from_encoder(self, values):
+    def _publish_wheel_encoder(self, values):
         if not self._init_ros():
             return
-        if self._odom_pub is None or Odometry is None:
+        if self._wheel_pub is None or Vector3Stamped is None:
             return
 
         rpm, velocity, distance = values
-        msg = Odometry()
+        msg = Vector3Stamped()
         try:
             msg.header.stamp = self._ros_node.get_clock().now().to_msg()
         except Exception:
             pass
-        msg.header.frame_id = self._odom_frame
-        msg.child_frame_id = self._base_frame
+        msg.header.frame_id = self._wheel_frame
 
-        msg.pose.pose.position.x = distance
-        msg.pose.pose.position.y = 0.0
-        msg.pose.pose.position.z = 0.0
-        msg.pose.pose.orientation.x = 0.0
-        msg.pose.pose.orientation.y = 0.0
-        msg.pose.pose.orientation.z = 0.0
-        msg.pose.pose.orientation.w = 1.0
-
-        msg.twist.twist.linear.x = velocity
-        msg.twist.twist.linear.y = 0.0
-        msg.twist.twist.linear.z = 0.0
-
-        # Use wheel RPM as angular velocity (converted to rad/s).
-        msg.twist.twist.angular.x = 0.0
-        msg.twist.twist.angular.y = 0.0
-        msg.twist.twist.angular.z = rpm * (2.0 * math.pi / 60.0)
+        # Vector3Stamped: x=rpm, y=velocity (m/s), z=distance (m)
+        msg.vector.x = rpm
+        msg.vector.y = velocity
+        msg.vector.z = distance
 
         try:
-            self._odom_pub.publish(msg)
+            self._wheel_pub.publish(msg)
         except Exception as exc:
-            print(f"[SerialHandler] ROS2 odom publish failed: {exc}")
+            print(f"[SerialHandler] ROS2 wheel encoder publish failed: {exc}")
 
     def _parse_encoder_values(self, value):
         parts = [p.strip() for p in value.split(";") if p.strip() != ""]
@@ -289,7 +273,7 @@ class threadRead(ThreadWithStop):
                 self._log_encoder(buff, value)
                 parsed = self._parse_encoder_values(value)
                 if parsed is not None:
-                    self._publish_odom_from_encoder(parsed)
+                    self._publish_wheel_encoder(parsed)
 
             if action == "imu":
                 splittedValue = value.split(";")
