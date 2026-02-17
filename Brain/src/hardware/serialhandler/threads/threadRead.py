@@ -31,6 +31,7 @@ import threading
 import re
 import os
 import serial
+import math
 from datetime import datetime, timedelta
 
 from src.templates.threadwithstop import ThreadWithStop
@@ -56,16 +57,16 @@ try:
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-    from std_msgs.msg import String
     from geometry_msgs.msg import Vector3Stamped
+    from sensor_msgs.msg import Imu
 except Exception:  # allow running without ROS2 deps
     rclpy = None
     Node = None
     QoSHistoryPolicy = None
     QoSProfile = None
     QoSReliabilityPolicy = None
-    String = None
     Vector3Stamped = None
+    Imu = None
 
 
 class threadRead(ThreadWithStop):
@@ -110,6 +111,8 @@ class threadRead(ThreadWithStop):
         self._wheel_pub = None
         self._ros_import_warned = False
         self._imu_topic = "/Imu"
+        self._imu_frame = "base_link"
+        self._imu_angle_unit = os.getenv("IMU_ANGLE_UNIT", "deg").lower()
         self._wheel_topic = "/wheel_encoder"
         self._wheel_frame = "base_link"
 
@@ -117,9 +120,9 @@ class threadRead(ThreadWithStop):
         if self._ros_node is not None and self._imu_pub is not None:
             return True
 
-        if rclpy is None or String is None:
+        if rclpy is None or Imu is None:
             if not self._ros_import_warned:
-                print("[SerialHandler] ROS2 publish disabled (missing rclpy/std_msgs/geometry_msgs).")
+                print("[SerialHandler] ROS2 publish disabled (missing rclpy/sensor_msgs/geometry_msgs).")
                 self._ros_import_warned = True
             return False
 
@@ -133,7 +136,7 @@ class threadRead(ThreadWithStop):
                 depth=1,
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
             )
-            self._imu_pub = self._ros_node.create_publisher(String, self._imu_topic, qos)
+            self._imu_pub = self._ros_node.create_publisher(Imu, self._imu_topic, qos)
             if Vector3Stamped is not None:
                 self._wheel_pub = self._ros_node.create_publisher(Vector3Stamped, self._wheel_topic, qos)
             return True
@@ -160,12 +163,59 @@ class threadRead(ThreadWithStop):
             except Exception:
                 pass
 
-    def _publish_imu_raw(self, data_str):
+    def _parse_imu_values(self, value):
+        parts = [p.strip() for p in value.split(";") if p.strip() != ""]
+        if len(parts) < 6:
+            return None
+        try:
+            return [
+                float(parts[0]),
+                float(parts[1]),
+                float(parts[2]),
+                float(parts[3]),
+                float(parts[4]),
+                float(parts[5]),
+            ]
+        except ValueError:
+            return None
+
+    def _rpy_to_quaternion(self, roll, pitch, yaw):
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cy = math.cos(yaw * 0.5)
+        sy = math.sin(yaw * 0.5)
+
+        qx = sr * cp * cy - cr * sp * sy
+        qy = cr * sp * cy + sr * cp * sy
+        qz = cr * cp * sy - sr * sp * cy
+        qw = cr * cp * cy + sr * sp * sy
+        return qx, qy, qz, qw
+
+    def _publish_imu(self, roll, pitch, yaw, accelx, accely, accelz):
         if not self._init_ros():
             return
 
-        msg = String()
-        msg.data = data_str
+        if self._imu_angle_unit in ("deg", "degree", "degrees"):
+            roll = math.radians(roll)
+            pitch = math.radians(pitch)
+            yaw = math.radians(yaw)
+
+        qx, qy, qz, qw = self._rpy_to_quaternion(roll, pitch, yaw)
+        msg = Imu()
+        try:
+            msg.header.stamp = self._ros_node.get_clock().now().to_msg()
+        except Exception:
+            pass
+        msg.header.frame_id = self._imu_frame
+        msg.orientation.x = qx
+        msg.orientation.y = qy
+        msg.orientation.z = qz
+        msg.orientation.w = qw
+        msg.linear_acceleration.x = accelx
+        msg.linear_acceleration.y = accely
+        msg.linear_acceleration.z = accelz
         try:
             self._imu_pub.publish(msg)
         except Exception as exc:
@@ -196,6 +246,7 @@ class threadRead(ThreadWithStop):
             print(f"[SerialHandler] ROS2 wheel encoder publish failed: {exc}")
 
     def _parse_encoder_values(self, value):
+        # x : rpm, y : velocity (m/s), z : distance (m)
         parts = [p.strip() for p in value.split(";") if p.strip() != ""]
         if len(parts) < 3:
             return None
@@ -276,20 +327,25 @@ class threadRead(ThreadWithStop):
                     self._publish_wheel_encoder(parsed)
 
             if action == "imu":
-                splittedValue = value.split(";")
                 if(len(buff)>20):
-                    data = {
-                        "roll": splittedValue[0],
-                        "pitch": splittedValue[1],
-                        "yaw": splittedValue[2],
-                        "accelx": splittedValue[3],
-                        "accely": splittedValue[4],
-                        "accelz": splittedValue[5],
-                    }
-                    data_str = str(data)
-                    self.imuDataSender.send(data_str)
-                    self._publish_imu_raw(data_str)
+                    parts = [p.strip() for p in value.split(";") if p.strip() != ""]
+                    if len(parts) >= 6:
+                        data = {
+                            "roll": parts[0],
+                            "pitch": parts[1],
+                            "yaw": parts[2],
+                            "accelx": parts[3],
+                            "accely": parts[4],
+                            "accelz": parts[5],
+                        }
+                        data_str = str(data)
+                        self.imuDataSender.send(data_str)
+                    imu_values = self._parse_imu_values(value)
+                    if imu_values is not None:
+                        roll, pitch, yaw, accelx, accely, accelz = imu_values
+                        self._publish_imu(roll, pitch, yaw, accelx, accely, accelz)
                 else:
+                    splittedValue = value.split(";")
                     self.imuAckSender.send(splittedValue[0])
 
             elif action == "brake":
