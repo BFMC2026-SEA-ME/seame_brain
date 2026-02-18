@@ -314,6 +314,21 @@ class threadRead(ThreadWithStop):
         except Exception as exc:
             print(f"[SerialHandler] ROS2 wheel encoder publish failed: {exc}")
 
+    def _handle_imu_sample(self, roll, pitch, yaw, accelx, accely, accelz, stamp=None):
+        data = {
+            "roll": str(roll),
+            "pitch": str(pitch),
+            "yaw": str(yaw),
+            "accelx": str(accelx),
+            "accely": str(accely),
+            "accelz": str(accelz),
+        }
+        self.imuDataSender.send(str(data))
+        self._publish_imu(roll, pitch, yaw, accelx, accely, accelz, stamp)
+
+    def _handle_encoder_sample(self, rpm, velocity, distance, stamp=None):
+        self._publish_wheel_encoder([rpm, velocity, distance], stamp)
+
     def _parse_encoder_values(self, value):
         # x : rpm, y : velocity (m/s), z : distance (m)
         parts = [p.strip() for p in value.split(";") if p.strip() != ""]
@@ -395,26 +410,17 @@ class threadRead(ThreadWithStop):
                     (ts_us, roll, pitch, yaw, accelx, accely, accelz,
                      rpm, velocity, distance) = parsed
                     stamp = self._stamp_from_us(ts_us)
-                    # Send to dashboard as IMU data (same format as @imu)
-                    data = {
-                        "roll": str(roll),
-                        "pitch": str(pitch),
-                        "yaw": str(yaw),
-                        "accelx": str(accelx),
-                        "accely": str(accely),
-                        "accelz": str(accelz),
-                    }
-                    self.imuDataSender.send(str(data))
-                    self._publish_imu(roll, pitch, yaw, accelx, accely, accelz, stamp)
-                    self._publish_wheel_encoder([rpm, velocity, distance], stamp)
+                    self._handle_imu_sample(roll, pitch, yaw, accelx, accely, accelz, stamp)
+                    self._handle_encoder_sample(rpm, velocity, distance, stamp)
                 return
 
             if action_lower in ("encoder", "enc") or action_lower.startswith("enc"):
                 self._log_encoder(buff, value)
                 parsed = self._parse_encoder_values(value)
                 if parsed is not None:
+                    rpm, velocity, distance = parsed
                     stamp = self._get_ros_now()
-                    self._publish_wheel_encoder(parsed, stamp)
+                    self._handle_encoder_sample(rpm, velocity, distance, stamp)
 
             if action == "imu":
                 if(len(buff)>20):
@@ -434,7 +440,7 @@ class threadRead(ThreadWithStop):
                     if imu_values is not None:
                         roll, pitch, yaw, accelx, accely, accelz = imu_values
                         stamp = self._get_ros_now()
-                        self._publish_imu(roll, pitch, yaw, accelx, accely, accelz, stamp)
+                        self._handle_imu_sample(roll, pitch, yaw, accelx, accely, accelz, stamp)
                 else:
                     splittedValue = value.split(";")
                     self.imuAckSender.send(splittedValue[0])
