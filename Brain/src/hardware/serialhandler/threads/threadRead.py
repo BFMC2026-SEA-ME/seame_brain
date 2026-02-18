@@ -115,6 +115,8 @@ class threadRead(ThreadWithStop):
         self._imu_angle_unit = os.getenv("IMU_ANGLE_UNIT", "deg").lower()
         self._wheel_topic = "/wheel_encoder"
         self._wheel_frame = "base_link"
+        self._imuenc_time_base_us = None
+        self._imuenc_time_base_ros_ns = None
 
     def _init_ros(self):
         if self._ros_node is not None and self._imu_pub is not None:
@@ -125,6 +127,56 @@ class threadRead(ThreadWithStop):
                 print("[SerialHandler] ROS2 publish disabled (missing rclpy/sensor_msgs/geometry_msgs).")
                 self._ros_import_warned = True
             return False
+
+    def _get_ros_now(self):
+        """Return ROS time (rclpy.time.Time) if ROS is available, else None."""
+        if not self._init_ros():
+            return None
+        try:
+            return self._ros_node.get_clock().now()
+        except Exception:
+            return None
+
+    def _apply_stamp(self, msg, stamp):
+        if stamp is None:
+            return
+        try:
+            msg.header.stamp = stamp.to_msg()
+            return
+        except Exception:
+            pass
+        try:
+            msg.header.stamp = stamp
+        except Exception:
+            pass
+
+    def _stamp_from_us(self, ts_us):
+        """Map MCU microsecond timestamp to ROS time using first sample as anchor."""
+        if ts_us is None:
+            return self._get_ros_now()
+        if rclpy is None:
+            return None
+        ros_now = self._get_ros_now()
+        if ros_now is None:
+            return None
+        try:
+            ts_us = int(ts_us)
+        except Exception:
+            return ros_now
+        if self._imuenc_time_base_us is None or ts_us < self._imuenc_time_base_us:
+            self._imuenc_time_base_us = ts_us
+            try:
+                self._imuenc_time_base_ros_ns = ros_now.nanoseconds
+            except Exception:
+                self._imuenc_time_base_ros_ns = None
+        if self._imuenc_time_base_ros_ns is None:
+            return ros_now
+        delta_us = ts_us - self._imuenc_time_base_us
+        stamp_ns = self._imuenc_time_base_ros_ns + (delta_us * 1000)
+        try:
+            return rclpy.time.Time(nanoseconds=stamp_ns)
+        except Exception:
+            return ros_now
 
         try:
             if not rclpy.ok():
@@ -179,6 +231,25 @@ class threadRead(ThreadWithStop):
         except ValueError:
             return None
 
+    def _parse_imuenc_values(self, value):
+        parts = [p.strip() for p in value.split(";") if p.strip() != ""]
+        if len(parts) < 10:
+            return None
+        try:
+            ts_us = int(float(parts[0]))
+            roll = float(parts[1])
+            pitch = float(parts[2])
+            yaw = float(parts[3])
+            accelx = float(parts[4])
+            accely = float(parts[5])
+            accelz = float(parts[6])
+            rpm = float(parts[7])
+            velocity = float(parts[8])
+            distance = float(parts[9])
+            return ts_us, roll, pitch, yaw, accelx, accely, accelz, rpm, velocity, distance
+        except ValueError:
+            return None
+
     def _rpy_to_quaternion(self, roll, pitch, yaw):
         cr = math.cos(roll * 0.5)
         sr = math.sin(roll * 0.5)
@@ -193,7 +264,7 @@ class threadRead(ThreadWithStop):
         qw = cr * cp * cy + sr * sp * sy
         return qx, qy, qz, qw
 
-    def _publish_imu(self, roll, pitch, yaw, accelx, accely, accelz):
+    def _publish_imu(self, roll, pitch, yaw, accelx, accely, accelz, stamp=None):
         if not self._init_ros():
             return
 
@@ -204,10 +275,9 @@ class threadRead(ThreadWithStop):
 
         qx, qy, qz, qw = self._rpy_to_quaternion(roll, pitch, yaw)
         msg = Imu()
-        try:
-            msg.header.stamp = self._ros_node.get_clock().now().to_msg()
-        except Exception:
-            pass
+        if stamp is None:
+            stamp = self._get_ros_now()
+        self._apply_stamp(msg, stamp)
         msg.header.frame_id = self._imu_frame
         msg.orientation.x = qx
         msg.orientation.y = qy
@@ -221,7 +291,7 @@ class threadRead(ThreadWithStop):
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU publish failed: {exc}")
 
-    def _publish_wheel_encoder(self, values):
+    def _publish_wheel_encoder(self, values, stamp=None):
         if not self._init_ros():
             return
         if self._wheel_pub is None or Vector3Stamped is None:
@@ -229,10 +299,9 @@ class threadRead(ThreadWithStop):
 
         rpm, velocity, distance = values
         msg = Vector3Stamped()
-        try:
-            msg.header.stamp = self._ros_node.get_clock().now().to_msg()
-        except Exception:
-            pass
+        if stamp is None:
+            stamp = self._get_ros_now()
+        self._apply_stamp(msg, stamp)
         msg.header.frame_id = self._wheel_frame
 
         # Vector3Stamped: x=rpm, y=velocity (m/s), z=distance (m)
@@ -320,11 +389,32 @@ class threadRead(ThreadWithStop):
             if self.debugger:
                 self.logger.info(buff)
 
+            if action_lower == "imuenc":
+                parsed = self._parse_imuenc_values(value)
+                if parsed is not None:
+                    (ts_us, roll, pitch, yaw, accelx, accely, accelz,
+                     rpm, velocity, distance) = parsed
+                    stamp = self._stamp_from_us(ts_us)
+                    # Send to dashboard as IMU data (same format as @imu)
+                    data = {
+                        "roll": str(roll),
+                        "pitch": str(pitch),
+                        "yaw": str(yaw),
+                        "accelx": str(accelx),
+                        "accely": str(accely),
+                        "accelz": str(accelz),
+                    }
+                    self.imuDataSender.send(str(data))
+                    self._publish_imu(roll, pitch, yaw, accelx, accely, accelz, stamp)
+                    self._publish_wheel_encoder([rpm, velocity, distance], stamp)
+                return
+
             if action_lower in ("encoder", "enc") or action_lower.startswith("enc"):
                 self._log_encoder(buff, value)
                 parsed = self._parse_encoder_values(value)
                 if parsed is not None:
-                    self._publish_wheel_encoder(parsed)
+                    stamp = self._get_ros_now()
+                    self._publish_wheel_encoder(parsed, stamp)
 
             if action == "imu":
                 if(len(buff)>20):
@@ -343,7 +433,8 @@ class threadRead(ThreadWithStop):
                     imu_values = self._parse_imu_values(value)
                     if imu_values is not None:
                         roll, pitch, yaw, accelx, accely, accelz = imu_values
-                        self._publish_imu(roll, pitch, yaw, accelx, accely, accelz)
+                        stamp = self._get_ros_now()
+                        self._publish_imu(roll, pitch, yaw, accelx, accely, accelz, stamp)
                 else:
                     splittedValue = value.split(";")
                     self.imuAckSender.send(splittedValue[0])
