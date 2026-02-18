@@ -25,11 +25,15 @@
 # CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
+import os
 from threading import Lock
 
 
 class FileHandler:
     def __init__(self, f_fileName):
+        dir_path = os.path.dirname(f_fileName)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         self.outFile = open(f_fileName, "w")
         self.lock = Lock()
 
