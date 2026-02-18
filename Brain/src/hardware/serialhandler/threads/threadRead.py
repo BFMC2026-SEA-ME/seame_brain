@@ -31,6 +31,7 @@ import threading
 import re
 import os
 import serial
+import math
 from datetime import datetime, timedelta
 
 from src.templates.threadwithstop import ThreadWithStop
@@ -52,6 +53,21 @@ from src.utils.messages.allMessages import (
 )
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 
+try:
+    import rclpy
+    from rclpy.node import Node
+    from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+    from geometry_msgs.msg import Vector3Stamped
+    from sensor_msgs.msg import Imu
+except Exception:  # allow running without ROS2 deps
+    rclpy = None
+    Node = None
+    QoSHistoryPolicy = None
+    QoSProfile = None
+    QoSReliabilityPolicy = None
+    Vector3Stamped = None
+    Imu = None
+
 
 class threadRead(ThreadWithStop):
     """This thread read the data that NUCLEO send to Raspberry PI.\n
@@ -71,8 +87,10 @@ class threadRead(ThreadWithStop):
         self.queuesList = queueList
         self.logger = logger
         self.debugger = debugger
+        self.debug_encoder = os.getenv("SERIAL_DEBUG_ENCODER", "").lower() in ("1", "true", "yes", "y")
         self.event = threading.Event()
         self._init_senders()
+        self._init_ros_state()
 
         self.expectedValues = {"kl": "0, 15 or 30", "instant": "1 or 0", "battery": "1 or 0",
                                "resourceMonitor": "1 or 0", "imu": "1 or 0", "steer" : "between -25 and 25",
@@ -86,6 +104,241 @@ class threadRead(ThreadWithStop):
         self.error_cooldown = timedelta(seconds=3)
 
         self.queue_sending()
+
+    def _init_ros_state(self):
+        self._ros_node = None
+        self._imu_pub = None
+        self._wheel_pub = None
+        self._ros_import_warned = False
+        self._imu_topic = "/Imu"
+        self._imu_frame = "base_link"
+        self._imu_angle_unit = os.getenv("IMU_ANGLE_UNIT", "deg").lower()
+        self._wheel_topic = "/wheel_encoder"
+        self._wheel_frame = "base_link"
+        self._imuenc_time_base_us = None
+        self._imuenc_time_base_ros_ns = None
+        self._ros_init_attempted = False
+
+    def _init_ros(self):
+        if self._ros_node is not None and self._imu_pub is not None:
+            return True
+
+        if rclpy is None or Imu is None:
+            if not self._ros_import_warned:
+                print("[SerialHandler] ROS2 publish disabled (missing rclpy/sensor_msgs/geometry_msgs).")
+                self._ros_import_warned = True
+            return False
+
+        try:
+            if not rclpy.ok():
+                rclpy.init(args=None)
+
+            self._ros_node = Node("imu_serial_bridge")
+            qos = QoSProfile(
+                history=QoSHistoryPolicy.KEEP_LAST,
+                depth=1,
+                reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            )
+            self._imu_pub = self._ros_node.create_publisher(Imu, self._imu_topic, qos)
+            if Vector3Stamped is not None:
+                self._wheel_pub = self._ros_node.create_publisher(Vector3Stamped, self._wheel_topic, qos)
+            return True
+        except Exception as exc:
+            print(f"[SerialHandler] ROS2 IMU init failed: {exc}")
+            self._ros_node = None
+            self._imu_pub = None
+            self._wheel_pub = None
+            return False
+
+    def _get_ros_now(self):
+        """Return ROS time (rclpy.time.Time) if ROS is available, else None."""
+        if not self._init_ros():
+            return None
+        try:
+            return self._ros_node.get_clock().now()
+        except Exception:
+            return None
+
+    def _apply_stamp(self, msg, stamp):
+        if stamp is None:
+            return
+        try:
+            msg.header.stamp = stamp.to_msg()
+            return
+        except Exception:
+            pass
+        try:
+            msg.header.stamp = stamp
+        except Exception:
+            pass
+
+    def _stamp_from_us(self, ts_us):
+        """Map MCU microsecond timestamp to ROS time using first sample as anchor."""
+        if ts_us is None:
+            return self._get_ros_now()
+        if rclpy is None:
+            return None
+        ros_now = self._get_ros_now()
+        if ros_now is None:
+            return None
+        try:
+            ts_us = int(ts_us)
+        except Exception:
+            return ros_now
+        if self._imuenc_time_base_us is None or ts_us < self._imuenc_time_base_us:
+            self._imuenc_time_base_us = ts_us
+            try:
+                self._imuenc_time_base_ros_ns = ros_now.nanoseconds
+            except Exception:
+                self._imuenc_time_base_ros_ns = None
+        if self._imuenc_time_base_ros_ns is None:
+            return ros_now
+        delta_us = ts_us - self._imuenc_time_base_us
+        stamp_ns = self._imuenc_time_base_ros_ns + (delta_us * 1000)
+        try:
+            return rclpy.time.Time(nanoseconds=stamp_ns)
+        except Exception:
+            return ros_now
+
+    def _shutdown_ros(self):
+        if self._ros_node is None:
+            return
+        try:
+            self._ros_node.destroy_node()
+        except Exception:
+            pass
+        self._ros_node = None
+        self._imu_pub = None
+        self._wheel_pub = None
+        if rclpy is not None and rclpy.ok():
+            try:
+                rclpy.shutdown()
+            except Exception:
+                pass
+
+    def _parse_imu_values(self, value):
+        parts = [p.strip() for p in value.split(";") if p.strip() != ""]
+        if len(parts) < 6:
+            return None
+        try:
+            return [
+                float(parts[0]),
+                float(parts[1]),
+                float(parts[2]),
+                float(parts[3]),
+                float(parts[4]),
+                float(parts[5]),
+            ]
+        except ValueError:
+            return None
+
+    def _parse_imuenc_values(self, value):
+        parts = [p.strip() for p in value.split(";") if p.strip() != ""]
+        if len(parts) < 10:
+            return None
+        try:
+            ts_us = int(float(parts[0]))
+            roll = float(parts[1])
+            pitch = float(parts[2])
+            yaw = float(parts[3])
+            accelx = float(parts[4])
+            accely = float(parts[5])
+            accelz = float(parts[6])
+            rpm = float(parts[7])
+            velocity = float(parts[8])
+            distance = float(parts[9])
+            return ts_us, roll, pitch, yaw, accelx, accely, accelz, rpm, velocity, distance
+        except ValueError:
+            return None
+
+    def _rpy_to_quaternion(self, roll, pitch, yaw):
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cy = math.cos(yaw * 0.5)
+        sy = math.sin(yaw * 0.5)
+
+        qx = sr * cp * cy - cr * sp * sy
+        qy = cr * sp * cy + sr * cp * sy
+        qz = cr * cp * sy - sr * sp * cy
+        qw = cr * cp * cy + sr * sp * sy
+        return qx, qy, qz, qw
+
+    def _publish_imu(self, roll, pitch, yaw, accelx, accely, accelz, stamp=None):
+        if not self._init_ros():
+            return
+
+        if self._imu_angle_unit in ("deg", "degree", "degrees"):
+            roll = math.radians(roll)
+            pitch = math.radians(pitch)
+            yaw = math.radians(yaw)
+
+        qx, qy, qz, qw = self._rpy_to_quaternion(roll, pitch, yaw)
+        msg = Imu()
+        if stamp is None:
+            stamp = self._get_ros_now()
+        self._apply_stamp(msg, stamp)
+        msg.header.frame_id = self._imu_frame
+        msg.orientation.x = qx
+        msg.orientation.y = qy
+        msg.orientation.z = qz
+        msg.orientation.w = qw
+        msg.linear_acceleration.x = accelx
+        msg.linear_acceleration.y = accely
+        msg.linear_acceleration.z = accelz
+        try:
+            self._imu_pub.publish(msg)
+        except Exception as exc:
+            print(f"[SerialHandler] ROS2 IMU publish failed: {exc}")
+
+    def _publish_wheel_encoder(self, values, stamp=None):
+        if not self._init_ros():
+            return
+        if self._wheel_pub is None or Vector3Stamped is None:
+            return
+
+        rpm, velocity, distance = values
+        msg = Vector3Stamped()
+        if stamp is None:
+            stamp = self._get_ros_now()
+        self._apply_stamp(msg, stamp)
+        msg.header.frame_id = self._wheel_frame
+
+        # Vector3Stamped: x=rpm, y=velocity (m/s), z=distance (m)
+        msg.vector.x = rpm
+        msg.vector.y = velocity
+        msg.vector.z = distance
+
+        try:
+            self._wheel_pub.publish(msg)
+        except Exception as exc:
+            print(f"[SerialHandler] ROS2 wheel encoder publish failed: {exc}")
+
+    def _handle_imu_sample(self, roll, pitch, yaw, accelx, accely, accelz, stamp=None):
+        data = {
+            "roll": str(roll),
+            "pitch": str(pitch),
+            "yaw": str(yaw),
+            "accelx": str(accelx),
+            "accely": str(accely),
+            "accelz": str(accelz),
+        }
+        self.imuDataSender.send(str(data))
+        self._publish_imu(roll, pitch, yaw, accelx, accely, accelz, stamp)
+
+    def _handle_encoder_sample(self, rpm, velocity, distance, stamp=None):
+        self._publish_wheel_encoder([rpm, velocity, distance], stamp)
+
+    def _parse_encoder_values(self, value):
+        # x : rpm, y : velocity (m/s), z : distance (m)
+        parts = [p.strip() for p in value.split(";") if p.strip() != ""]
+        if len(parts) < 3:
+            return None
+        try:
+            return [float(parts[0]), float(parts[1]), float(parts[2])]
+        except ValueError:
+            return None
 
     def _init_senders(self):
         self.enableButtonSender = messageHandlerSender(self.queuesList, EnableButton)
@@ -106,6 +359,9 @@ class threadRead(ThreadWithStop):
     # ====================================== RUN ==========================================
     def thread_work(self):
         try:
+            if not self._ros_init_attempted:
+                self._ros_init_attempted = True
+                self._init_ros()
             with self.process.serialLock:
                 serial_con = self.process.serialCon
                 if serial_con is None or not self.process.serialConnected or not serial_con.is_open:
@@ -146,24 +402,56 @@ class threadRead(ThreadWithStop):
         """This function select which type of message we receive from NUCLEO and send the data further."""
 
         if '@' in buff and ':' in buff:
-            action, value = buff.split(":") 
+            action, value = buff.split(":", 1) 
             action = action[1:]
+            action_lower = action.lower()
             if self.debugger:
                 self.logger.info(buff)
 
+            if action_lower == "imuenc":
+                parsed = self._parse_imuenc_values(value)
+                if parsed is not None:
+                    (ts_us, roll, pitch, yaw, accelx, accely, accelz,
+                     rpm, velocity, distance) = parsed
+                    stamp = self._stamp_from_us(ts_us)
+                    self._handle_imu_sample(roll, pitch, yaw, accelx, accely, accelz, stamp)
+                    self._handle_encoder_sample(rpm, velocity, distance, stamp)
+                elif self.debugger:
+                    try:
+                        self.logger.warning(f"[SerialHandler] IMUENC parse failed: {value}")
+                    except Exception:
+                        pass
+                return
+
+            if action_lower in ("encoder", "enc") or action_lower.startswith("enc"):
+                self._log_encoder(buff, value)
+                parsed = self._parse_encoder_values(value)
+                if parsed is not None:
+                    rpm, velocity, distance = parsed
+                    stamp = self._get_ros_now()
+                    self._handle_encoder_sample(rpm, velocity, distance, stamp)
+
             if action == "imu":
-                splittedValue = value.split(";")
                 if(len(buff)>20):
-                    data = {
-                        "roll": splittedValue[0],
-                        "pitch": splittedValue[1],
-                        "yaw": splittedValue[2],
-                        "accelx": splittedValue[3],
-                        "accely": splittedValue[4],
-                        "accelz": splittedValue[5],
-                    }
-                    self.imuDataSender.send(str(data))
+                    parts = [p.strip() for p in value.split(";") if p.strip() != ""]
+                    if len(parts) >= 6:
+                        data = {
+                            "roll": parts[0],
+                            "pitch": parts[1],
+                            "yaw": parts[2],
+                            "accelx": parts[3],
+                            "accely": parts[4],
+                            "accelz": parts[5],
+                        }
+                        data_str = str(data)
+                        self.imuDataSender.send(data_str)
+                    imu_values = self._parse_imu_values(value)
+                    if imu_values is not None:
+                        roll, pitch, yaw, accelx, accely, accelz = imu_values
+                        stamp = self._get_ros_now()
+                        self._handle_imu_sample(roll, pitch, yaw, accelx, accely, accelz, stamp)
                 else:
+                    splittedValue = value.split(";")
                     self.imuAckSender.send(splittedValue[0])
 
             elif action == "brake":
@@ -228,6 +516,18 @@ class threadRead(ThreadWithStop):
                 self.event.wait(3)
                 os.system("sudo shutdown -h now")
             
+    def _log_encoder(self, raw_msg, value):
+        """Log raw encoder payload for debugging when enabled."""
+        if not (self.debug_encoder or self.debugger):
+            return
+        msg = f"[ENCODER] raw={raw_msg} value={value}"
+        try:
+            print(msg)
+            if self.logger:
+                self.logger.info(msg)
+        except Exception:
+            pass
+
     def check_valid_value(self, action, message):
         if message == "syntax error":
             print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m - Invalid \033[94m{action.upper()}\033[0m value (expected {self.expectedValues[action]})")
@@ -256,3 +556,7 @@ class threadRead(ThreadWithStop):
             self.last_error_time = now
             return True
         return False
+
+    def stop(self):
+        self._shutdown_ros()
+        super(threadRead, self).stop()

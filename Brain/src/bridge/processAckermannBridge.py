@@ -7,6 +7,8 @@ When AUTO mode is activated on the dashboard, this node reads
 ackermann_msgs/AckermannDriveStamped messages (default: `/ackermann_cmd`)
 and converts them to the SpeedMotor/SteerMotor queue updates consumed by `threadWrite`.
 """
+# speed : 값 그대로
+# steer : -0.436 ~ 0.436(rad)(25도정도 ) + 우회전, -좌회전
 
 from __future__ import annotations
 
@@ -39,6 +41,7 @@ class AckermannBridgeNode(Node):
     """Forward Ackermann commands to the serial handler when AUTO mode is active."""
 
     def __init__(self, queues_list: Mapping[str, object]) -> None:
+        # ROS2 노드 초기화, 파라미터/QoS/구독 설정.
         super().__init__("ackermann_bridge")
         self._queues_list = queues_list
         self._auto_active = False
@@ -57,10 +60,10 @@ class AckermannBridgeNode(Node):
 
         # Conversion / limits
         self.declare_parameter("speed_scale", 10.0)      # m/s -> motor cmd
-        self.declare_parameter("steer_scale", 250.0)     # rad(or deg) -> motor cmd
+        self.declare_parameter("steer_scale", 10.0)     # rad(or deg) -> motor cmd
         self.declare_parameter("steer_limit", 250)
         self.declare_parameter("steer_invert", False)    # 되도록 False 유지
-        self.declare_parameter("steer_use_degrees", False)  # True면 rad->deg 후 scale
+        self.declare_parameter("steer_use_degrees", True)  # True면 rad->deg 후 scale ; rad 값을 deg로 변환후 스케일
 
         self._ackermann_topic = str(self.get_parameter("ackermann_topic").value)
         self._speed_scale = float(self.get_parameter("speed_scale").value)
@@ -74,8 +77,9 @@ class AckermannBridgeNode(Node):
         ack_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
-            reliability=QoSReliabilityPolicy.RELIABLE,
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
         )
+
 
         self._ack_sub = self.create_subscription(
             AckermannDriveStamped,
@@ -93,6 +97,7 @@ class AckermannBridgeNode(Node):
 
     # ------------------------------------------------------------------ callbacks --
     def _poll_driving_mode(self) -> None:
+        # DrivingMode를 폴링해서 AUTO 게이트를 켜고 끕니다.
         mode = self._driving_mode_subscriber.receive()
         if mode is None:
             return
@@ -106,39 +111,42 @@ class AckermannBridgeNode(Node):
             self._auto_active = False
 
     def _handle_ackermann(self, msg: AckermannDriveStamped) -> None:
+        # AUTO 상태에서 AckermannDriveStamped를 Speed/Steer로 변환합니다.
         if not self._auto_active:
             return
 
         # AckermannDriveStamped:
-        #   msg.drive.speed           [m/s]
-        #   msg.drive.steering_angle  [rad]  (일반적으로 + = 좌회전)
+        #   msg.drive.speed           [cm/s]
+        #   msg.drive.steering_angle  [rad]  
         speed_cmd = self._scale_speed(msg.drive.speed)
         steer_cmd = self._scale_steer(msg.drive.steering_angle)
 
         self._speed_sender.send(speed_cmd)
         self._steer_sender.send(steer_cmd)
 
-        self.get_logger().debug(
-            f"{self._ackermann_topic} -> speed={msg.drive.speed:.3f} "
-            f"steer(rad)={msg.drive.steering_angle:.3f} => "
-            f"motor speed={speed_cmd} steer={steer_cmd}"
-        )
+        # self.get_logger().debug(
+        #     f"{self._ackermann_topic} -> speed={msg.drive.speed:.3f} "
+        #     f"steer(rad)={msg.drive.steering_angle:.3f} => "
+        #     f"motor speed={speed_cmd} steer={steer_cmd}"
+        # )
 
     # ------------------------------------------------------------------ scaling --
     def _scale_speed(self, speed_mps: float) -> str:
-        scaled = int(speed_mps * self._speed_scale)
+        # 선속도(m/s)를 모터 명령 문자열로 스케일링합니다.
+        scaled = int(speed_mps * self._speed_scale) # *10
         return str(scaled)
 
     def _scale_steer(self, steering_angle: float) -> str:
+        # 조향각(rad/deg)을 모터 명령 문자열로 스케일링합니다.
         # ROS Ackermann convention: + = left
         # Hardware: + = right  => flip sign once here
-        steer_value = -steering_angle
+        steer_value = steering_angle # +일때 오른쪽, -일때 왼쪽으로 가도록 (하드웨어에 맞게)
 
         # Optional: convert to degrees before scaling
         if self._steer_use_degrees:
-            steer_value = math.degrees(steer_value)
+            steer_value = math.degrees(steer_value) # rad to deg
 
-        steer_value *= self._steer_scale
+        steer_value *= self._steer_scale # deg * 10.0
 
         # Avoid double inversion: keep this False if you already flipped above
         if self._steer_invert:
@@ -154,12 +162,14 @@ class _AckermannBridgeThread(ThreadWithStop):
     """Spin the ROS2 node in a BFMC-friendly thread (pause/resume/stop)."""
 
     def __init__(self, queues_list: Mapping[str, object]) -> None:
+        # ROS executor/node를 위한 스레드 상태를 준비합니다.
         super().__init__(pause=0.005)
         self._queues_list = queues_list
         self._executor: Optional[SingleThreadedExecutor] = None
         self._node: Optional[AckermannBridgeNode] = None
 
     def thread_work(self) -> None:
+        # 주기마다 executor를 한 번씩 spin; 실패 시 재초기화합니다.
         if self._node is None or self._executor is None:
             self._maybe_init_ros()
             time.sleep(0.05)
@@ -173,10 +183,12 @@ class _AckermannBridgeThread(ThreadWithStop):
             time.sleep(0.1)
 
     def stop(self) -> None:
+        # 스레드를 중지하고 ROS 리소스를 정리합니다.
         self._reset_ros()
         super().stop()
 
     def _maybe_init_ros(self) -> None:
+        # 필요 시 rclpy/node/executor를 초기화합니다.
         if self._node is not None:
             return
 
@@ -192,6 +204,7 @@ class _AckermannBridgeThread(ThreadWithStop):
             self._reset_ros()
 
     def _reset_ros(self) -> None:
+        # executor/node/rclpy 컨텍스트를 안전하게 종료합니다.
         if self._executor and self._node:
             try:
                 self._executor.remove_node(self._node)
@@ -224,6 +237,7 @@ def create_ackermann_bridge_process(
 
     class AckermannBridgeProcess(WorkerProcess):
         def _init_threads(self):
+            # ROS2 브릿지 스레드를 등록합니다.
             self.threads.append(_AckermannBridgeThread(self.queuesList))
 
     return AckermannBridgeProcess(queue_list, ready_event=ready_event, daemon=True)
