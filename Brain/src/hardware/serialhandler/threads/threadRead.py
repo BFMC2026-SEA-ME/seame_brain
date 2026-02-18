@@ -117,6 +117,7 @@ class threadRead(ThreadWithStop):
         self._wheel_frame = "base_link"
         self._imuenc_time_base_us = None
         self._imuenc_time_base_ros_ns = None
+        self._ros_init_attempted = False
 
     def _init_ros(self):
         if self._ros_node is not None and self._imu_pub is not None:
@@ -358,6 +359,9 @@ class threadRead(ThreadWithStop):
     # ====================================== RUN ==========================================
     def thread_work(self):
         try:
+            if not self._ros_init_attempted:
+                self._ros_init_attempted = True
+                self._init_ros()
             with self.process.serialLock:
                 serial_con = self.process.serialCon
                 if serial_con is None or not self.process.serialConnected or not serial_con.is_open:
@@ -412,6 +416,11 @@ class threadRead(ThreadWithStop):
                     stamp = self._stamp_from_us(ts_us)
                     self._handle_imu_sample(roll, pitch, yaw, accelx, accely, accelz, stamp)
                     self._handle_encoder_sample(rpm, velocity, distance, stamp)
+                elif self.debugger:
+                    try:
+                        self.logger.warning(f"[SerialHandler] IMUENC parse failed: {value}")
+                    except Exception:
+                        pass
                 return
 
             if action_lower in ("encoder", "enc") or action_lower.startswith("enc"):
