@@ -129,6 +129,27 @@ class threadRead(ThreadWithStop):
                 self._ros_import_warned = True
             return False
 
+        try:
+            if not rclpy.ok():
+                rclpy.init(args=None)
+
+            self._ros_node = Node("imu_serial_bridge")
+            qos = QoSProfile(
+                history=QoSHistoryPolicy.KEEP_LAST,
+                depth=1,
+                reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            )
+            self._imu_pub = self._ros_node.create_publisher(Imu, self._imu_topic, qos)
+            if Vector3Stamped is not None:
+                self._wheel_pub = self._ros_node.create_publisher(Vector3Stamped, self._wheel_topic, qos)
+            return True
+        except Exception as exc:
+            print(f"[SerialHandler] ROS2 IMU init failed: {exc}")
+            self._ros_node = None
+            self._imu_pub = None
+            self._wheel_pub = None
+            return False
+
     def _get_ros_now(self):
         """Return ROS time (rclpy.time.Time) if ROS is available, else None."""
         if not self._init_ros():
@@ -178,27 +199,6 @@ class threadRead(ThreadWithStop):
             return rclpy.time.Time(nanoseconds=stamp_ns)
         except Exception:
             return ros_now
-
-        try:
-            if not rclpy.ok():
-                rclpy.init(args=None)
-
-            self._ros_node = Node("imu_serial_bridge")
-            qos = QoSProfile(
-                history=QoSHistoryPolicy.KEEP_LAST,
-                depth=1,
-                reliability=QoSReliabilityPolicy.BEST_EFFORT,
-            )
-            self._imu_pub = self._ros_node.create_publisher(Imu, self._imu_topic, qos)
-            if Vector3Stamped is not None:
-                self._wheel_pub = self._ros_node.create_publisher(Vector3Stamped, self._wheel_topic, qos)
-            return True
-        except Exception as exc:
-            print(f"[SerialHandler] ROS2 IMU init failed: {exc}")
-            self._ros_node = None
-            self._imu_pub = None
-            self._wheel_pub = None
-            return False
 
     def _shutdown_ros(self):
         if self._ros_node is None:
