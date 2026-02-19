@@ -113,6 +113,25 @@ class threadRead(ThreadWithStop):
         self._imu_topic = "/Imu"
         self._imu_frame = "base_link"
         self._imu_angle_unit = os.getenv("IMU_ANGLE_UNIT", "deg").lower()
+        # Transform IMU frame to vehicle (base_link) frame when publishing /Imu.
+        # Based on confirmed mapping:
+        # x_imu = -y_base, y_imu = -x_base, z_imu = -z_base
+        self._imu_apply_vehicle_frame = os.getenv("IMU_APPLY_VEHICLE_FRAME", "1").lower() in ("1", "true", "yes", "y")
+        self._imu_to_base_quat = self._quat_normalize((0.0, -0.7071067811865475, 0.7071067811865476, 0.0))
+        # Defaults derived from Bosch BNO055 datasheet (fusion defaults):
+        # accel noise density 190 µg/√Hz @ 62.5 Hz BW, gyro noise density 0.014 °/s/√Hz @ 32 Hz BW,
+        # magnetometer heading accuracy 2.5° (used as orientation variance proxy).
+        accel_noise_density = 190e-6 * 9.80665  # m/s^2/√Hz
+        accel_bw_hz = 62.5
+        gyro_noise_density = 0.014 * (math.pi / 180.0)  # rad/s/√Hz
+        gyro_bw_hz = 32.0
+        heading_accuracy_deg = 2.5
+        default_orientation_cov = (heading_accuracy_deg * (math.pi / 180.0)) ** 2
+        default_ang_vel_cov = (gyro_noise_density ** 2) * gyro_bw_hz
+        default_lin_acc_cov = (accel_noise_density ** 2) * accel_bw_hz
+        self._imu_orientation_cov = self._read_float_env("IMU_ORIENTATION_COV", default_orientation_cov)
+        self._imu_ang_vel_cov = self._read_float_env("IMU_ANGULAR_VELOCITY_COV", default_ang_vel_cov)
+        self._imu_lin_acc_cov = self._read_float_env("IMU_LINEAR_ACCELERATION_COV", default_lin_acc_cov)
         self._wheel_topic = "/wheel_encoder"
         self._wheel_frame = "base_link"
         self._imuenc_time_base_us = None
@@ -265,6 +284,43 @@ class threadRead(ThreadWithStop):
         qw = cr * cp * cy + sr * sp * sy
         return qx, qy, qz, qw
 
+    def _quat_multiply(self, q1, q2):
+        w1, x1, y1, z1 = q1
+        w2, x2, y2, z2 = q2
+        return (
+            (w1 * w2) - (x1 * x2) - (y1 * y2) - (z1 * z2),
+            (w1 * x2) + (x1 * w2) + (y1 * z2) - (z1 * y2),
+            (w1 * y2) - (x1 * z2) + (y1 * w2) + (z1 * x2),
+            (w1 * z2) + (x1 * y2) - (y1 * x2) + (z1 * w2),
+        )
+
+    def _quat_normalize(self, q):
+        w, x, y, z = q
+        norm = math.sqrt((w * w) + (x * x) + (y * y) + (z * z))
+        if norm == 0:
+            return (1.0, 0.0, 0.0, 0.0)
+        return (w / norm, x / norm, y / norm, z / norm)
+
+    def _imu_vector_to_base(self, x, y, z):
+        # x_imu = -y_base, y_imu = -x_base, z_imu = -z_base
+        # => x_base = -y_imu, y_base = -x_imu, z_base = -z_imu
+        return (-y, -x, -z)
+
+    def _read_float_env(self, name, default):
+        try:
+            return float(os.getenv(name, default))
+        except Exception:
+            return float(default)
+
+    def _fill_imu_covariance(self, msg):
+        msg.orientation_covariance = [0.0] * 9
+        msg.angular_velocity_covariance = [0.0] * 9
+        msg.linear_acceleration_covariance = [0.0] * 9
+        for idx in (0, 4, 8):
+            msg.orientation_covariance[idx] = self._imu_orientation_cov
+            msg.angular_velocity_covariance[idx] = self._imu_ang_vel_cov
+            msg.linear_acceleration_covariance[idx] = self._imu_lin_acc_cov
+
     def _publish_imu(self, roll, pitch, yaw, accelx, accely, accelz, stamp=None):
         if not self._init_ros():
             return
@@ -275,6 +331,11 @@ class threadRead(ThreadWithStop):
             yaw = math.radians(yaw)
 
         qx, qy, qz, qw = self._rpy_to_quaternion(roll, pitch, yaw)
+        q = (qw, qx, qy, qz)
+        if self._imu_apply_vehicle_frame:
+            q = self._quat_multiply(q, self._imu_to_base_quat)
+            accelx, accely, accelz = self._imu_vector_to_base(accelx, accely, accelz)
+        qw, qx, qy, qz = self._quat_normalize(q)
         msg = Imu()
         if stamp is None:
             stamp = self._get_ros_now()
@@ -287,6 +348,7 @@ class threadRead(ThreadWithStop):
         msg.linear_acceleration.x = accelx
         msg.linear_acceleration.y = accely
         msg.linear_acceleration.z = accelz
+        self._fill_imu_covariance(msg)
         try:
             self._imu_pub.publish(msg)
         except Exception as exc:
