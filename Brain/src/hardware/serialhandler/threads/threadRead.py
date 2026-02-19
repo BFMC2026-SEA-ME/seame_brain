@@ -334,7 +334,8 @@ class threadRead(ThreadWithStop):
         qx, qy, qz, qw = self._rpy_to_quaternion(roll, pitch, yaw)
         q = (qw, qx, qy, qz)
         if self._imu_apply_vehicle_frame:
-            q = self._quat_multiply(q, self._imu_to_base_quat)
+            # Pre-multiply to rotate IMU frame into base_link frame.
+            q = self._quat_multiply(self._imu_to_base_quat, q)
             accelx, accely, accelz = self._imu_vector_to_base(accelx, accely, accelz)
         qw, qx, qy, qz = self._quat_normalize(q)
         msg = Imu()
