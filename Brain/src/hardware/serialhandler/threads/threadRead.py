@@ -119,8 +119,6 @@ class threadRead(ThreadWithStop):
         self._imu_apply_vehicle_frame = os.getenv("IMU_APPLY_VEHICLE_FRAME", "1").lower() in ("1", "true", "yes", "y")
         # IMU heading is clockwise-positive; invert to ROS CCW-positive yaw.
         self._imu_yaw_invert = os.getenv("IMU_YAW_INVERT", "1").lower() in ("1", "true", "yes", "y")
-        # IMU pitch is nose-down positive in NED/FRD; invert to ROS nose-up positive.
-        self._imu_pitch_invert = os.getenv("IMU_PITCH_INVERT", "1").lower() in ("1", "true", "yes", "y")
         # 180 deg rotation about +X to flip Y/Z
         self._imu_to_base_quat = self._quat_normalize((0.0, 1.0, 0.0, 0.0))
         # Defaults derived from Bosch BNO055 datasheet (fusion defaults):
@@ -335,14 +333,13 @@ class threadRead(ThreadWithStop):
             pitch = math.radians(pitch)
             yaw = math.radians(yaw)
 
-        if self._imu_apply_vehicle_frame:
-            if self._imu_yaw_invert:
-                yaw = -yaw
-            if self._imu_pitch_invert:
-                pitch = -pitch
         qx, qy, qz, qw = self._rpy_to_quaternion(roll, pitch, yaw)
         q = (qw, qx, qy, qz)
         if self._imu_apply_vehicle_frame:
+            if self._imu_yaw_invert:
+                yaw = -yaw
+                qx, qy, qz, qw = self._rpy_to_quaternion(roll, pitch, yaw)
+                q = (qw, qx, qy, qz)
             # Post-multiply to express base_link orientation.
             q = self._quat_multiply(q, self._imu_to_base_quat)
             accelx, accely, accelz = self._imu_vector_to_base(accelx, accely, accelz)
