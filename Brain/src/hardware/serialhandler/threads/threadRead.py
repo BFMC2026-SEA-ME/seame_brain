@@ -1,20 +1,20 @@
 # Copyright (c) 2019, Bosch Engineering Center Cluj and BFMC organizers
 # All rights reserved.
-
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
-
+#
 # 1. Redistributions of source code must retain the above copyright notice, this
 #    list of conditions and the following disclaimer.
-
+#
 # 2. Redistributions in binary form must reproduce the above copyright notice,
 #    this list of conditions and the following disclaimer in the documentation
 #    and/or other materials provided with the distribution.
-
+#
 # 3. Neither the name of the copyright holder nor the names of its
 #    contributors may be used to endorse or promote products derived from
 #    this software without specific prior written permission.
-
+#
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 # AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -25,6 +25,7 @@
 # CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
+
 import logging
 import time
 import threading
@@ -79,7 +80,7 @@ class threadRead(ThreadWithStop):
     """
 
     # ===================================== INIT =========================================
-    def __init__(self, process, logFile, queueList, logger, debugger = False):
+    def __init__(self, process, logFile, queueList, logger, debugger=False):
         super(threadRead, self).__init__(pause=0.01)
         self.process = process
         self.logFile = logFile
@@ -93,7 +94,7 @@ class threadRead(ThreadWithStop):
         self._init_ros_state()
 
         self.expectedValues = {"kl": "0, 15 or 30", "instant": "1 or 0", "battery": "1 or 0",
-                               "resourceMonitor": "1 or 0", "imu": "1 or 0", "steer" : "between -25 and 25",
+                               "resourceMonitor": "1 or 0", "imu": "1 or 0", "steer": "between -25 and 25",
                                "speed": "between -500 and 500", "break": "between -250 and 250"}
 
         self.warningPattern = r'^(-?[0-9]+)H(-?[0-5]?[0-9])M(-?[0-5]?[0-9])S$'
@@ -113,6 +114,7 @@ class threadRead(ThreadWithStop):
         self._imu_topic = "/Imu"
         self._imu_frame = "base_link"
         self._imu_angle_unit = os.getenv("IMU_ANGLE_UNIT", "deg").lower()
+
         # Transform IMU frame to vehicle (base_link) frame when publishing /Imu.
         # Mapping based on observed angular velocity alignment:
         # IMU axes appear aligned with base_link axes.
@@ -120,12 +122,19 @@ class threadRead(ThreadWithStop):
         # BASE: +x forward, +y left, +z up
         # => x_base = x_imu, y_base = y_imu, z_base = z_imu
         self._imu_apply_vehicle_frame = os.getenv("IMU_APPLY_VEHICLE_FRAME", "1").lower() in ("1", "true", "yes", "y")
-        # IMU heading is clockwise-positive; invert to ROS CCW-positive yaw.
-        self._imu_yaw_invert = os.getenv("IMU_YAW_INVERT", "1").lower() in ("1", "true", "yes", "y")
-        # IMU pitch is nose-down positive in NED/FRD; invert to ROS nose-up positive.
+
+        # IMPORTANT:
+        # We observed: when rotating CCW (viewed from above), angular_velocity.z is POSITIVE.
+        # This matches ROS convention (FLU, right-hand rule): CCW yaw => +Z angular velocity, and yaw should INCREASE.
+        # Therefore yaw invert should be OFF by default.
+        self._imu_yaw_invert = os.getenv("IMU_YAW_INVERT", "0").lower() in ("1", "true", "yes", "y")
+
+        # Pitch sign can still depend on sensor convention; keep configurable.
         self._imu_pitch_invert = os.getenv("IMU_PITCH_INVERT", "1").lower() in ("1", "true", "yes", "y")
+
         # Identity rotation (IMU already aligned with base_link).
         self._imu_to_base_quat = self._quat_normalize((1.0, 0.0, 0.0, 0.0))
+
         # Defaults derived from Bosch BNO055 datasheet (fusion defaults):
         # accel noise density 190 µg/√Hz @ 62.5 Hz BW, gyro noise density 0.014 °/s/√Hz @ 32 Hz BW,
         # magnetometer heading accuracy 2.5° (used as orientation variance proxy).
@@ -137,9 +146,11 @@ class threadRead(ThreadWithStop):
         default_orientation_cov = (heading_accuracy_deg * (math.pi / 180.0)) ** 2
         default_ang_vel_cov = (gyro_noise_density ** 2) * gyro_bw_hz
         default_lin_acc_cov = (accel_noise_density ** 2) * accel_bw_hz
+
         self._imu_orientation_cov = self._read_float_env("IMU_ORIENTATION_COV", default_orientation_cov)
         self._imu_ang_vel_cov = self._read_float_env("IMU_ANGULAR_VELOCITY_COV", default_ang_vel_cov)
         self._imu_lin_acc_cov = self._read_float_env("IMU_LINEAR_ACCELERATION_COV", default_lin_acc_cov)
+
         self._wheel_topic = "/wheel_encoder"
         self._wheel_frame = "base_link"
         self._imuenc_time_base_us = None
@@ -457,6 +468,7 @@ class threadRead(ThreadWithStop):
                     pitch = -pitch
             qx, qy, qz, qw = self._rpy_to_quaternion(roll, pitch, yaw)
             q = (qw, qx, qy, qz)
+
         if self._imu_apply_vehicle_frame:
             # Post-multiply to express base_link orientation.
             q = self._quat_multiply(q, self._imu_to_base_quat)
@@ -464,26 +476,32 @@ class threadRead(ThreadWithStop):
                 gyrox, gyroy, gyroz = self._imu_vector_to_base(gyrox, gyroy, gyroz)
             if accelx is not None and accely is not None and accelz is not None:
                 accelx, accely, accelz = self._imu_vector_to_base(accelx, accely, accelz)
+
         qw, qx, qy, qz = self._quat_normalize(q)
+
         msg = Imu()
         if stamp is None:
             stamp = self._get_ros_now()
         self._apply_stamp(msg, stamp)
         msg.header.frame_id = self._imu_frame
+
         msg.orientation.x = qx
         msg.orientation.y = qy
         msg.orientation.z = qz
         msg.orientation.w = qw
+
         has_linear_acceleration = accelx is not None and accely is not None and accelz is not None
         if has_linear_acceleration:
             msg.linear_acceleration.x = accelx
             msg.linear_acceleration.y = accely
             msg.linear_acceleration.z = accelz
+
         has_angular_velocity = gyrox is not None and gyroy is not None and gyroz is not None
         if has_angular_velocity:
             msg.angular_velocity.x = gyrox
             msg.angular_velocity.y = gyroy
             msg.angular_velocity.z = gyroz
+
         self._fill_imu_covariance(
             msg,
             has_angular_velocity,
@@ -492,6 +510,7 @@ class threadRead(ThreadWithStop):
             angular_cov=angular_cov,
             linear_cov=linear_cov,
         )
+
         try:
             self._imu_pub.publish(msg)
         except Exception as exc:
@@ -600,7 +619,6 @@ class threadRead(ThreadWithStop):
                     try:
                         data = serial_con.read(serial_con.in_waiting).decode("ascii")
                         self.buffer += data
-
                     except Exception as e:
                         if self._should_send_error():
                             self.serialConnectionStateSender.send(False)
@@ -631,7 +649,7 @@ class threadRead(ThreadWithStop):
         """This function select which type of message we receive from NUCLEO and send the data further."""
 
         if '@' in buff and ':' in buff:
-            action, value = buff.split(":", 1) 
+            action, value = buff.split(":", 1)
             action = action[1:]
             action_lower = action.lower()
             if self.debugger:
@@ -679,7 +697,7 @@ class threadRead(ThreadWithStop):
                     self._handle_encoder_sample(rpm, velocity, distance, stamp)
 
             if action == "imu":
-                if(len(buff)>20):
+                if (len(buff) > 20):
                     parts = [p.strip() for p in value.split(";") if p.strip() != ""]
                     if len(parts) >= 12:
                         data = {
@@ -716,7 +734,7 @@ class threadRead(ThreadWithStop):
                 splittedValue = value.split(";")
                 speedPWM = splittedValue[0]
                 steerPWM = splittedValue[1]
-                
+
                 if speedPWM == "0" and steerPWM == "0":
                     self.calibRunDoneSender.send(True)
                 else:
@@ -730,16 +748,15 @@ class threadRead(ThreadWithStop):
                 lowerLimit = splittedValue[0]
                 upperLimit = splittedValue[1]
                 self.steeringLimitsSender.send({"lowerLimit": lowerLimit, "upperLimit": upperLimit})
-                
+
             elif action == "instant":
                 if self.check_valid_value(action, value):
                     self.instantConsumptionSender.send(float(value))
 
             elif action == "battery":
                 if self.check_valid_value(action, value):
-                    percentage = (int(value)-7000)/14
+                    percentage = (int(value) - 7000) / 14
                     percentage = max(0, min(100, round(percentage)))
-
                     self.batteryLvlSender.send(percentage)
 
             elif action == "resourceMonitor":
@@ -754,12 +771,12 @@ class threadRead(ThreadWithStop):
                 if data:
                     print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m - Shutdown in \033[94m{data.group(1)}h {data.group(2)}m {data.group(3)}s\033[0m")
                     self.warningSender.send(data)
-                    
+
             elif action == "shutdown":
                 print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m - \033[94mShutting down now!\033[0m")
                 self.event.wait(3)
                 os.system("sudo shutdown -h now")
-            
+
     def _log_encoder(self, raw_msg, value):
         """Log raw encoder payload for debugging when enabled."""
         if not (self.debug_encoder or self.debugger):
@@ -776,21 +793,20 @@ class threadRead(ThreadWithStop):
         if message == "syntax error":
             print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m - Invalid \033[94m{action.upper()}\033[0m value (expected {self.expectedValues[action]})")
             return False
-    
+
         if message == "kl 15/30 is required!!":
             print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m - KL 15/30 required for \033[94m{action.upper()}\033[0m")
             return False
-        
+
         if message == "ack":
             return False
         return True
-    
+
     def is_float(self, string):
         try:
             float(string)
         except ValueError:
             return False
-
         return True
 
     def _should_send_error(self):
