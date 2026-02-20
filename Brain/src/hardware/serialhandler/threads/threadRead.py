@@ -283,8 +283,33 @@ class threadRead(ThreadWithStop):
             rpm = float(parts[13])
             velocity = float(parts[14])
             distance = float(parts[15])
-            return (ts_us, roll, pitch, yaw, gyrox, gyroy, gyroz,
-                    accelx, accely, accelz, velx, vely, velz, rpm, velocity, distance)
+
+            magx = magy = magz = None
+            quat = None
+            cov = None
+            # Extended @imuenc format (ts + 3 + 3 + 3 + 3 + 3 + 3 + 4 + 9 = 32 values)
+            if len(parts) >= 32:
+                magx = float(parts[16])
+                magy = float(parts[17])
+                magz = float(parts[18])
+                qx = float(parts[19])
+                qy = float(parts[20])
+                qz = float(parts[21])
+                qw = float(parts[22])
+                quat = (qx, qy, qz, qw)
+                cov = [float(v) for v in parts[23:32]]
+
+            return {
+                "ts_us": ts_us,
+                "rpy": (roll, pitch, yaw),
+                "gyro": (gyrox, gyroy, gyroz),
+                "accel": (accelx, accely, accelz),
+                "vel": (velx, vely, velz),
+                "encoder": (rpm, velocity, distance),
+                "mag": (magx, magy, magz),
+                "quat": quat,
+                "cov": cov,
+            }
         except ValueError:
             return None
 
@@ -301,6 +326,23 @@ class threadRead(ThreadWithStop):
         qz = cr * cp * sy - sr * sp * cy
         qw = cr * cp * cy + sr * sp * sy
         return qx, qy, qz, qw
+
+    def _quat_to_rpy(self, q):
+        w, x, y, z = q
+        sinr_cosp = 2.0 * ((w * x) + (y * z))
+        cosr_cosp = 1.0 - 2.0 * ((x * x) + (y * y))
+        roll = math.atan2(sinr_cosp, cosr_cosp)
+
+        sinp = 2.0 * ((w * y) - (z * x))
+        if abs(sinp) >= 1.0:
+            pitch = math.copysign(math.pi / 2.0, sinp)
+        else:
+            pitch = math.asin(sinp)
+
+        siny_cosp = 2.0 * ((w * z) + (x * y))
+        cosy_cosp = 1.0 - 2.0 * ((y * y) + (z * z))
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        return roll, pitch, yaw
 
     def _quat_multiply(self, q1, q2):
         w1, x1, y1, z1 = q1
@@ -330,39 +372,87 @@ class threadRead(ThreadWithStop):
         except Exception:
             return float(default)
 
-    def _fill_imu_covariance(self, msg, has_angular_velocity, has_linear_acceleration):
-        msg.orientation_covariance = [0.0] * 9
-        for idx in (0, 4, 8):
-            msg.orientation_covariance[idx] = self._imu_orientation_cov
-        if has_angular_velocity:
-            msg.angular_velocity_covariance = [0.0] * 9
+    def _fill_imu_covariance(
+        self,
+        msg,
+        has_angular_velocity,
+        has_linear_acceleration,
+        orientation_cov=None,
+        angular_cov=None,
+        linear_cov=None,
+    ):
+        if orientation_cov is not None and len(orientation_cov) == 9:
+            msg.orientation_covariance = list(orientation_cov)
+        else:
+            msg.orientation_covariance = [0.0] * 9
             for idx in (0, 4, 8):
-                msg.angular_velocity_covariance[idx] = self._imu_ang_vel_cov
+                msg.orientation_covariance[idx] = self._imu_orientation_cov
+
+        if has_angular_velocity:
+            if angular_cov is not None and len(angular_cov) == 9:
+                msg.angular_velocity_covariance = list(angular_cov)
+            else:
+                msg.angular_velocity_covariance = [0.0] * 9
+                for idx in (0, 4, 8):
+                    msg.angular_velocity_covariance[idx] = self._imu_ang_vel_cov
         else:
             msg.angular_velocity_covariance = [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
         if has_linear_acceleration:
-            msg.linear_acceleration_covariance = [0.0] * 9
-            for idx in (0, 4, 8):
-                msg.linear_acceleration_covariance[idx] = self._imu_lin_acc_cov
+            if linear_cov is not None and len(linear_cov) == 9:
+                msg.linear_acceleration_covariance = list(linear_cov)
+            else:
+                msg.linear_acceleration_covariance = [0.0] * 9
+                for idx in (0, 4, 8):
+                    msg.linear_acceleration_covariance[idx] = self._imu_lin_acc_cov
         else:
             msg.linear_acceleration_covariance = [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-    def _publish_imu(self, roll, pitch, yaw, accelx, accely, accelz, gyrox, gyroy, gyroz, stamp=None):
+    def _publish_imu(
+        self,
+        roll,
+        pitch,
+        yaw,
+        accelx,
+        accely,
+        accelz,
+        gyrox,
+        gyroy,
+        gyroz,
+        stamp=None,
+        quat=None,
+        orientation_cov=None,
+        angular_cov=None,
+        linear_cov=None,
+    ):
         if not self._init_ros():
             return
 
-        if self._imu_angle_unit in ("deg", "degree", "degrees"):
-            roll = math.radians(roll)
-            pitch = math.radians(pitch)
-            yaw = math.radians(yaw)
+        q = None
+        if quat is not None:
+            qx, qy, qz, qw = quat
+            q = (qw, qx, qy, qz)
+            if self._imu_apply_vehicle_frame and (self._imu_yaw_invert or self._imu_pitch_invert):
+                r, p, y = self._quat_to_rpy(q)
+                if self._imu_yaw_invert:
+                    y = -y
+                if self._imu_pitch_invert:
+                    p = -p
+                qx, qy, qz, qw = self._rpy_to_quaternion(r, p, y)
+                q = (qw, qx, qy, qz)
+        else:
+            if self._imu_angle_unit in ("deg", "degree", "degrees"):
+                roll = math.radians(roll)
+                pitch = math.radians(pitch)
+                yaw = math.radians(yaw)
 
-        if self._imu_apply_vehicle_frame:
-            if self._imu_yaw_invert:
-                yaw = -yaw
-            if self._imu_pitch_invert:
-                pitch = -pitch
-        qx, qy, qz, qw = self._rpy_to_quaternion(roll, pitch, yaw)
-        q = (qw, qx, qy, qz)
+            if self._imu_apply_vehicle_frame:
+                if self._imu_yaw_invert:
+                    yaw = -yaw
+                if self._imu_pitch_invert:
+                    pitch = -pitch
+            qx, qy, qz, qw = self._rpy_to_quaternion(roll, pitch, yaw)
+            q = (qw, qx, qy, qz)
         if self._imu_apply_vehicle_frame:
             # Post-multiply to express base_link orientation.
             q = self._quat_multiply(q, self._imu_to_base_quat)
@@ -390,7 +480,14 @@ class threadRead(ThreadWithStop):
             msg.angular_velocity.x = gyrox
             msg.angular_velocity.y = gyroy
             msg.angular_velocity.z = gyroz
-        self._fill_imu_covariance(msg, has_angular_velocity, has_linear_acceleration)
+        self._fill_imu_covariance(
+            msg,
+            has_angular_velocity,
+            has_linear_acceleration,
+            orientation_cov=orientation_cov,
+            angular_cov=angular_cov,
+            linear_cov=linear_cov,
+        )
         try:
             self._imu_pub.publish(msg)
         except Exception as exc:
@@ -419,14 +516,41 @@ class threadRead(ThreadWithStop):
         except Exception as exc:
             print(f"[SerialHandler] ROS2 wheel encoder publish failed: {exc}")
 
-    def _handle_imu_sample(self, roll, pitch, yaw, accelx, accely, accelz, gyrox, gyroy, gyroz, stamp=None):
+    def _handle_imu_sample(
+        self,
+        roll,
+        pitch,
+        yaw,
+        accelx,
+        accely,
+        accelz,
+        gyrox,
+        gyroy,
+        gyroz,
+        stamp=None,
+        quat=None,
+        orientation_cov=None,
+    ):
         data = {
             "roll": str(roll),
             "pitch": str(pitch),
             "yaw": str(yaw),
         }
         self.imuDataSender.send(str(data))
-        self._publish_imu(roll, pitch, yaw, accelx, accely, accelz, gyrox, gyroy, gyroz, stamp)
+        self._publish_imu(
+            roll,
+            pitch,
+            yaw,
+            accelx,
+            accely,
+            accelz,
+            gyrox,
+            gyroy,
+            gyroz,
+            stamp,
+            quat=quat,
+            orientation_cov=orientation_cov,
+        )
 
     def _handle_encoder_sample(self, rpm, velocity, distance, stamp=None):
         self._publish_wheel_encoder([rpm, velocity, distance], stamp)
@@ -512,11 +636,28 @@ class threadRead(ThreadWithStop):
             if action_lower == "imuenc":
                 parsed = self._parse_imuenc_values(value)
                 if parsed is not None:
-                    (ts_us, roll, pitch, yaw, gyrox, gyroy, gyroz,
-                     accelx, accely, accelz, velx, vely, velz,
-                     rpm, velocity, distance) = parsed
+                    ts_us = parsed["ts_us"]
+                    roll, pitch, yaw = parsed["rpy"]
+                    gyrox, gyroy, gyroz = parsed["gyro"]
+                    accelx, accely, accelz = parsed["accel"]
+                    rpm, velocity, distance = parsed["encoder"]
+                    quat = parsed["quat"]
+                    cov = parsed["cov"]
                     stamp = self._stamp_from_us(ts_us)
-                    self._handle_imu_sample(roll, pitch, yaw, accelx, accely, accelz, gyrox, gyroy, gyroz, stamp)
+                    self._handle_imu_sample(
+                        roll,
+                        pitch,
+                        yaw,
+                        accelx,
+                        accely,
+                        accelz,
+                        gyrox,
+                        gyroy,
+                        gyroz,
+                        stamp,
+                        quat=quat,
+                        orientation_cov=cov,
+                    )
                     self._handle_encoder_sample(rpm, velocity, distance, stamp)
                 elif self.debugger:
                     try:
