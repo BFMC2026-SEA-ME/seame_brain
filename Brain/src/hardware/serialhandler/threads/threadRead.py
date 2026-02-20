@@ -114,15 +114,17 @@ class threadRead(ThreadWithStop):
         self._imu_frame = "base_link"
         self._imu_angle_unit = os.getenv("IMU_ANGLE_UNIT", "deg").lower()
         # Transform IMU frame to vehicle (base_link) frame when publishing /Imu.
-        # Based on confirmed mapping (FRD -> FLU):
-        # x_imu = x_base, y_imu = -y_base, z_imu = -z_base
+        # Mapping based on current IMU axes:
+        # IMU: +y forward, +x right, +z up
+        # BASE: +x forward, +y left, +z up
+        # => x_base = y_imu, y_base = -x_imu, z_base = z_imu
         self._imu_apply_vehicle_frame = os.getenv("IMU_APPLY_VEHICLE_FRAME", "1").lower() in ("1", "true", "yes", "y")
         # IMU heading is clockwise-positive; invert to ROS CCW-positive yaw.
         self._imu_yaw_invert = os.getenv("IMU_YAW_INVERT", "1").lower() in ("1", "true", "yes", "y")
         # IMU pitch is nose-down positive in NED/FRD; invert to ROS nose-up positive.
         self._imu_pitch_invert = os.getenv("IMU_PITCH_INVERT", "1").lower() in ("1", "true", "yes", "y")
-        # 180 deg rotation about +X to flip Y/Z
-        self._imu_to_base_quat = self._quat_normalize((0.0, 1.0, 0.0, 0.0))
+        # +90 deg rotation about +Z to map IMU axes to base_link.
+        self._imu_to_base_quat = self._quat_normalize((math.cos(math.pi / 4.0), 0.0, 0.0, math.sin(math.pi / 4.0)))
         # Defaults derived from Bosch BNO055 datasheet (fusion defaults):
         # accel noise density 190 µg/√Hz @ 62.5 Hz BW, gyro noise density 0.014 °/s/√Hz @ 32 Hz BW,
         # magnetometer heading accuracy 2.5° (used as orientation variance proxy).
@@ -362,9 +364,10 @@ class threadRead(ThreadWithStop):
         return (w / norm, x / norm, y / norm, z / norm)
 
     def _imu_vector_to_base(self, x, y, z):
-        # x_imu = x_base, y_imu = -y_base, z_imu = -z_base
-        # => x_base = x_imu, y_base = -y_imu, z_base = -z_imu
-        return (x, -y, -z)
+        # IMU: +y forward, +x right, +z up
+        # BASE: +x forward, +y left, +z up
+        # => x_base = y_imu, y_base = -x_imu, z_base = z_imu
+        return (y, -x, z)
 
     def _read_float_env(self, name, default):
         try:
