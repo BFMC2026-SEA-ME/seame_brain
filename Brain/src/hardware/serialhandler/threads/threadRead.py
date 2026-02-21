@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # Copyright (c) 2019, Bosch Engineering Center Cluj and BFMC organizers
 # All rights reserved.
 #
@@ -27,11 +28,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 
 import logging
-import time
 import threading
 import re
 import os
-import serial
 import math
 from datetime import datetime, timedelta
 
@@ -58,7 +57,9 @@ try:
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+
     from geometry_msgs.msg import Vector3Stamped
+    from geometry_msgs.msg import TwistWithCovarianceStamped
     from sensor_msgs.msg import Imu
 except Exception:  # allow running without ROS2 deps
     rclpy = None
@@ -67,17 +68,12 @@ except Exception:  # allow running without ROS2 deps
     QoSProfile = None
     QoSReliabilityPolicy = None
     Vector3Stamped = None
+    TwistWithCovarianceStamped = None
     Imu = None
 
 
 class threadRead(ThreadWithStop):
-    """This thread read the data that NUCLEO send to Raspberry PI.\n
-
-    Args:
-        process (processSerialHandler): ProcessSerialHandler object.
-        logFile (FileHandler): The path to the history file where you can find the logs from the connection.
-        queueList (dictionar of multiprocessing.queues.Queue): Dictionar of queues where the ID is the type of messages.
-    """
+    """This thread reads the data that NUCLEO sends to Raspberry PI."""
 
     # ===================================== INIT =========================================
     def __init__(self, process, logFile, queueList, logger, debugger=False):
@@ -93,9 +89,11 @@ class threadRead(ThreadWithStop):
         self._init_senders()
         self._init_ros_state()
 
-        self.expectedValues = {"kl": "0, 15 or 30", "instant": "1 or 0", "battery": "1 or 0",
-                               "resourceMonitor": "1 or 0", "imu": "1 or 0", "steer": "between -25 and 25",
-                               "speed": "between -500 and 500", "break": "between -250 and 250"}
+        self.expectedValues = {
+            "kl": "0, 15 or 30", "instant": "1 or 0", "battery": "1 or 0",
+            "resourceMonitor": "1 or 0", "imu": "1 or 0", "steer": "between -25 and 25",
+            "speed": "between -500 and 500", "break": "between -250 and 250"
+        }
 
         self.warningPattern = r'^(-?[0-9]+)H(-?[0-5]?[0-9])M(-?[0-5]?[0-9])S$'
         self.resourceMonitorPattern = r'Heap \((\d+\.\d+)\);Stack \((\d+\.\d+)\)'
@@ -108,41 +106,28 @@ class threadRead(ThreadWithStop):
 
     def _init_ros_state(self):
         self._ros_node = None
+
+        # IMU pub (기존 유지)
         self._imu_pub = None
-        self._wheel_pub = None
-        self._ros_import_warned = False
         self._imu_topic = "/Imu"
         self._imu_frame = "base_link"
         self._imu_angle_unit = os.getenv("IMU_ANGLE_UNIT", "deg").lower()
 
-        # Transform IMU frame to vehicle (base_link) frame when publishing /Imu.
-        # Mapping based on observed angular velocity alignment:
-        # IMU axes appear aligned with base_link axes.
-        # IMU: +x forward, +y left, +z up
-        # BASE: +x forward, +y left, +z up
-        # => x_base = x_imu, y_base = y_imu, z_base = z_imu
         self._imu_apply_vehicle_frame = os.getenv("IMU_APPLY_VEHICLE_FRAME", "1").lower() in ("1", "true", "yes", "y")
 
-        # IMPORTANT:
-        # We observed: when rotating CCW (viewed from above), angular_velocity.z is POSITIVE.
-        # This matches ROS convention (FLU, right-hand rule): CCW yaw => +Z angular velocity, and yaw should INCREASE.
-        # Therefore yaw invert should be OFF by default.
+        # CCW yaw => + (ROS FLU right-hand rule). keep OFF by default
         self._imu_yaw_invert = os.getenv("IMU_YAW_INVERT", "0").lower() in ("1", "true", "yes", "y")
-
-        # Pitch sign can still depend on sensor convention; keep configurable.
         self._imu_pitch_invert = os.getenv("IMU_PITCH_INVERT", "1").lower() in ("1", "true", "yes", "y")
 
-        # Identity rotation (IMU already aligned with base_link).
         self._imu_to_base_quat = self._quat_normalize((1.0, 0.0, 0.0, 0.0))
 
-        # Defaults derived from Bosch BNO055 datasheet (fusion defaults):
-        # accel noise density 190 µg/√Hz @ 62.5 Hz BW, gyro noise density 0.014 °/s/√Hz @ 32 Hz BW,
-        # magnetometer heading accuracy 2.5° (used as orientation variance proxy).
+        # IMU covariance defaults (spec-based rough)
         accel_noise_density = 190e-6 * 9.80665  # m/s^2/√Hz
         accel_bw_hz = 62.5
         gyro_noise_density = 0.014 * (math.pi / 180.0)  # rad/s/√Hz
         gyro_bw_hz = 32.0
         heading_accuracy_deg = 2.5
+
         default_orientation_cov = (heading_accuracy_deg * (math.pi / 180.0)) ** 2
         default_ang_vel_cov = (gyro_noise_density ** 2) * gyro_bw_hz
         default_lin_acc_cov = (accel_noise_density ** 2) * accel_bw_hz
@@ -151,10 +136,25 @@ class threadRead(ThreadWithStop):
         self._imu_ang_vel_cov = self._read_float_env("IMU_ANGULAR_VELOCITY_COV", default_ang_vel_cov)
         self._imu_lin_acc_cov = self._read_float_env("IMU_LINEAR_ACCELERATION_COV", default_lin_acc_cov)
 
-        self._wheel_topic = "/wheel_encoder"
+        # Existing wheel encoder pub (compat 유지)
+        self._wheel_pub = None
+        self._wheel_topic = "/wheel_encoder"  # Vector3Stamped x=rpm y=vel z=dist
         self._wheel_frame = "base_link"
+
+        # NEW: wheel twist for robot_localization twist0
+        self._wheel_twist_pub = None
+        self._wheel_twist_topic = os.getenv("WHEEL_TWIST_TOPIC", "/wheel_twist")
+        self._wheel_twist_frame = os.getenv("WHEEL_TWIST_FRAME", "base_link")
+
+        # Wheel covariance tuning (velocity only)
+        # sigma_v [m/s]. 기본 0.05 (상황 따라 0.03~0.10 조절)
+        self._wheel_sigma_v = self._read_float_env("WHEEL_SIGMA_V", 0.05)
+
+        # For imuenc time
         self._imuenc_time_base_us = None
         self._imuenc_time_base_ros_ns = None
+
+        self._ros_import_warned = False
         self._ros_init_attempted = False
 
     def _init_ros(self):
@@ -177,19 +177,30 @@ class threadRead(ThreadWithStop):
                 depth=1,
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
             )
+
+            # IMU publisher
             self._imu_pub = self._ros_node.create_publisher(Imu, self._imu_topic, qos)
+
+            # Existing wheel encoder publisher (compat)
             if Vector3Stamped is not None:
                 self._wheel_pub = self._ros_node.create_publisher(Vector3Stamped, self._wheel_topic, qos)
+
+            # NEW: wheel twist publisher
+            if TwistWithCovarianceStamped is not None:
+                self._wheel_twist_pub = self._ros_node.create_publisher(
+                    TwistWithCovarianceStamped, self._wheel_twist_topic, qos
+                )
+
             return True
         except Exception as exc:
-            print(f"[SerialHandler] ROS2 IMU init failed: {exc}")
+            print(f"[SerialHandler] ROS2 init failed: {exc}")
             self._ros_node = None
             self._imu_pub = None
             self._wheel_pub = None
+            self._wheel_twist_pub = None
             return False
 
     def _get_ros_now(self):
-        """Return ROS time (rclpy.time.Time) if ROS is available, else None."""
         if not self._init_ros():
             return None
         try:
@@ -223,14 +234,17 @@ class threadRead(ThreadWithStop):
             ts_us = int(ts_us)
         except Exception:
             return ros_now
+
         if self._imuenc_time_base_us is None or ts_us < self._imuenc_time_base_us:
             self._imuenc_time_base_us = ts_us
             try:
                 self._imuenc_time_base_ros_ns = ros_now.nanoseconds
             except Exception:
                 self._imuenc_time_base_ros_ns = None
+
         if self._imuenc_time_base_ros_ns is None:
             return ros_now
+
         delta_us = ts_us - self._imuenc_time_base_us
         stamp_ns = self._imuenc_time_base_ros_ns + (delta_us * 1000)
         try:
@@ -248,31 +262,20 @@ class threadRead(ThreadWithStop):
         self._ros_node = None
         self._imu_pub = None
         self._wheel_pub = None
+        self._wheel_twist_pub = None
         if rclpy is not None and rclpy.ok():
             try:
                 rclpy.shutdown()
             except Exception:
                 pass
 
+    # ---------------- Parsing ----------------
     def _parse_imu_values(self, value):
         parts = [p.strip() for p in value.split(";") if p.strip() != ""]
         if len(parts) < 12:
             return None
         try:
-            return [
-                float(parts[0]),
-                float(parts[1]),
-                float(parts[2]),
-                float(parts[3]),
-                float(parts[4]),
-                float(parts[5]),
-                float(parts[6]),
-                float(parts[7]),
-                float(parts[8]),
-                float(parts[9]),
-                float(parts[10]),
-                float(parts[11]),
-            ]
+            return [float(parts[i]) for i in range(12)]
         except ValueError:
             return None
 
@@ -301,15 +304,9 @@ class threadRead(ThreadWithStop):
             magx = magy = magz = None
             quat = None
             cov = None
-            # Extended @imuenc format (ts + 3 + 3 + 3 + 3 + 3 + 3 + 4 + 9 = 32 values)
             if len(parts) >= 32:
-                magx = float(parts[16])
-                magy = float(parts[17])
-                magz = float(parts[18])
-                qx = float(parts[19])
-                qy = float(parts[20])
-                qz = float(parts[21])
-                qw = float(parts[22])
+                magx = float(parts[16]); magy = float(parts[17]); magz = float(parts[18])
+                qx = float(parts[19]); qy = float(parts[20]); qz = float(parts[21]); qw = float(parts[22])
                 quat = (qx, qy, qz, qw)
                 cov = [float(v) for v in parts[23:32]]
 
@@ -327,14 +324,20 @@ class threadRead(ThreadWithStop):
         except ValueError:
             return None
 
-    def _rpy_to_quaternion(self, roll, pitch, yaw):
-        cr = math.cos(roll * 0.5)
-        sr = math.sin(roll * 0.5)
-        cp = math.cos(pitch * 0.5)
-        sp = math.sin(pitch * 0.5)
-        cy = math.cos(yaw * 0.5)
-        sy = math.sin(yaw * 0.5)
+    def _parse_encoder_values(self, value):
+        parts = [p.strip() for p in value.split(";") if p.strip() != ""]
+        if len(parts) < 3:
+            return None
+        try:
+            return [float(parts[0]), float(parts[1]), float(parts[2])]
+        except ValueError:
+            return None
 
+    # ---------------- Quaternion helpers ----------------
+    def _rpy_to_quaternion(self, roll, pitch, yaw):
+        cr = math.cos(roll * 0.5); sr = math.sin(roll * 0.5)
+        cp = math.cos(pitch * 0.5); sp = math.sin(pitch * 0.5)
+        cy = math.cos(yaw * 0.5); sy = math.sin(yaw * 0.5)
         qx = sr * cp * cy - cr * sp * sy
         qy = cr * sp * cy + sr * cp * sy
         qz = cr * cp * sy - sr * sp * cy
@@ -376,9 +379,6 @@ class threadRead(ThreadWithStop):
         return (w / norm, x / norm, y / norm, z / norm)
 
     def _imu_vector_to_base(self, x, y, z):
-        # IMU: +x forward, +y left, +z up
-        # BASE: +x forward, +y left, +z up
-        # => x_base = x_imu, y_base = y_imu, z_base = z_imu
         return (x, y, z)
 
     def _read_float_env(self, name, default):
@@ -387,15 +387,9 @@ class threadRead(ThreadWithStop):
         except Exception:
             return float(default)
 
-    def _fill_imu_covariance(
-        self,
-        msg,
-        has_angular_velocity,
-        has_linear_acceleration,
-        orientation_cov=None,
-        angular_cov=None,
-        linear_cov=None,
-    ):
+    # ---------------- Covariance fill ----------------
+    def _fill_imu_covariance(self, msg, has_angular_velocity, has_linear_acceleration,
+                             orientation_cov=None, angular_cov=None, linear_cov=None):
         if orientation_cov is not None and len(orientation_cov) == 9:
             msg.orientation_covariance = list(orientation_cov)
         else:
@@ -423,23 +417,17 @@ class threadRead(ThreadWithStop):
         else:
             msg.linear_acceleration_covariance = [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-    def _publish_imu(
-        self,
-        roll,
-        pitch,
-        yaw,
-        accelx,
-        accely,
-        accelz,
-        gyrox,
-        gyroy,
-        gyroz,
-        stamp=None,
-        quat=None,
-        orientation_cov=None,
-        angular_cov=None,
-        linear_cov=None,
-    ):
+    def _wheel_twist_cov36(self):
+        """TwistWithCovarianceStamped covariance(36) with only linear.x variance set."""
+        sigma_v = float(self._wheel_sigma_v)
+        var_v = sigma_v * sigma_v
+        cov = [0.0] * 36
+        cov[0] = var_v  # linear.x
+        return cov
+
+    # ---------------- Publishers ----------------
+    def _publish_imu(self, roll, pitch, yaw, accelx, accely, accelz, gyrox, gyroy, gyroz,
+                     stamp=None, quat=None, orientation_cov=None, angular_cov=None, linear_cov=None):
         if not self._init_ros():
             return
 
@@ -466,11 +454,11 @@ class threadRead(ThreadWithStop):
                     yaw = -yaw
                 if self._imu_pitch_invert:
                     pitch = -pitch
+
             qx, qy, qz, qw = self._rpy_to_quaternion(roll, pitch, yaw)
             q = (qw, qx, qy, qz)
 
         if self._imu_apply_vehicle_frame:
-            # Post-multiply to express base_link orientation.
             q = self._quat_multiply(q, self._imu_to_base_quat)
             if gyrox is not None and gyroy is not None and gyroz is not None:
                 gyrox, gyroy, gyroz = self._imu_vector_to_base(gyrox, gyroy, gyroz)
@@ -516,77 +504,65 @@ class threadRead(ThreadWithStop):
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU publish failed: {exc}")
 
-    def _publish_wheel_encoder(self, values, stamp=None):
+    def _publish_wheel_encoder_and_twist(self, values, stamp=None):
+        """
+        Publish:
+          - /wheel_encoder (Vector3Stamped) for backward compat
+          - /wheel_twist  (TwistWithCovarianceStamped) for robot_localization twist0
+        """
         if not self._init_ros():
-            return
-        if self._wheel_pub is None or Vector3Stamped is None:
             return
 
         rpm, velocity, distance = values
-        msg = Vector3Stamped()
         if stamp is None:
             stamp = self._get_ros_now()
-        self._apply_stamp(msg, stamp)
-        msg.header.frame_id = self._wheel_frame
 
-        # Vector3Stamped: x=rpm, y=velocity (m/s), z=distance (m)
-        msg.vector.x = rpm
-        msg.vector.y = velocity
-        msg.vector.z = distance
+        # 1) 기존 /wheel_encoder 유지
+        if self._wheel_pub is not None and Vector3Stamped is not None:
+            msg = Vector3Stamped()
+            self._apply_stamp(msg, stamp)
+            msg.header.frame_id = self._wheel_frame
+            msg.vector.x = float(rpm)
+            msg.vector.y = float(velocity)
+            msg.vector.z = float(distance)
+            try:
+                self._wheel_pub.publish(msg)
+            except Exception as exc:
+                print(f"[SerialHandler] ROS2 wheel_encoder publish failed: {exc}")
 
-        try:
-            self._wheel_pub.publish(msg)
-        except Exception as exc:
-            print(f"[SerialHandler] ROS2 wheel encoder publish failed: {exc}")
+        # 2) NEW /wheel_twist 추가
+        if self._wheel_twist_pub is not None and TwistWithCovarianceStamped is not None:
+            tmsg = TwistWithCovarianceStamped()
+            self._apply_stamp(tmsg, stamp)
+            tmsg.header.frame_id = self._wheel_twist_frame  # base_link
+            tmsg.twist.twist.linear.x = float(velocity)
+            tmsg.twist.twist.linear.y = 0.0
+            tmsg.twist.twist.linear.z = 0.0
+            tmsg.twist.twist.angular.x = 0.0
+            tmsg.twist.twist.angular.y = 0.0
+            tmsg.twist.twist.angular.z = 0.0
+            tmsg.twist.covariance = self._wheel_twist_cov36()
+            try:
+                self._wheel_twist_pub.publish(tmsg)
+            except Exception as exc:
+                print(f"[SerialHandler] ROS2 wheel_twist publish failed: {exc}")
 
-    def _handle_imu_sample(
-        self,
-        roll,
-        pitch,
-        yaw,
-        accelx,
-        accely,
-        accelz,
-        gyrox,
-        gyroy,
-        gyroz,
-        stamp=None,
-        quat=None,
-        orientation_cov=None,
-    ):
-        data = {
-            "roll": str(roll),
-            "pitch": str(pitch),
-            "yaw": str(yaw),
-        }
+    # ---------------- Message handlers ----------------
+    def _handle_imu_sample(self, roll, pitch, yaw, accelx, accely, accelz, gyrox, gyroy, gyroz,
+                           stamp=None, quat=None, orientation_cov=None):
+        data = {"roll": str(roll), "pitch": str(pitch), "yaw": str(yaw)}
         self.imuDataSender.send(str(data))
         self._publish_imu(
-            roll,
-            pitch,
-            yaw,
-            accelx,
-            accely,
-            accelz,
-            gyrox,
-            gyroy,
-            gyroz,
+            roll, pitch, yaw,
+            accelx, accely, accelz,
+            gyrox, gyroy, gyroz,
             stamp,
             quat=quat,
             orientation_cov=orientation_cov,
         )
 
     def _handle_encoder_sample(self, rpm, velocity, distance, stamp=None):
-        self._publish_wheel_encoder([rpm, velocity, distance], stamp)
-
-    def _parse_encoder_values(self, value):
-        # x : rpm, y : velocity (m/s), z : distance (m)
-        parts = [p.strip() for p in value.split(";") if p.strip() != ""]
-        if len(parts) < 3:
-            return None
-        try:
-            return [float(parts[0]), float(parts[1]), float(parts[2])]
-        except ValueError:
-            return None
+        self._publish_wheel_encoder_and_twist([rpm, velocity, distance], stamp)
 
     def _init_senders(self):
         self.enableButtonSender = messageHandlerSender(self.queuesList, EnableButton)
@@ -610,6 +586,7 @@ class threadRead(ThreadWithStop):
             if not self._ros_init_attempted:
                 self._ros_init_attempted = True
                 self._init_ros()
+
             with self.process.serialLock:
                 serial_con = self.process.serialCon
                 if serial_con is None or not self.process.serialConnected or not serial_con.is_open:
@@ -627,13 +604,11 @@ class threadRead(ThreadWithStop):
 
             while ";;" in self.buffer:
                 msg, self.buffer = self.buffer.split(";;", 1)
-
                 if msg.strip():
                     try:
                         self.send_queue(msg.strip())
                     except Exception as e:
                         print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;91mERROR\033[0m - Processing message \033[94m{msg.strip()}\033[0m ({e})")
-
         except Exception as e:
             if self._should_send_error():
                 self.serialConnectionStateSender.send(False)
@@ -641,17 +616,15 @@ class threadRead(ThreadWithStop):
 
     # ==================================== SENDING =======================================
     def queue_sending(self):
-        """Callback function for enable button flag."""
         self.enableButtonSender.send(True)
         threading.Timer(1, self.queue_sending).start()
 
     def send_queue(self, buff):
-        """This function select which type of message we receive from NUCLEO and send the data further."""
-
         if '@' in buff and ':' in buff:
             action, value = buff.split(":", 1)
             action = action[1:]
             action_lower = action.lower()
+
             if self.debugger:
                 self.logger.info(buff)
 
@@ -665,21 +638,18 @@ class threadRead(ThreadWithStop):
                     rpm, velocity, distance = parsed["encoder"]
                     quat = parsed["quat"]
                     cov = parsed["cov"]
+
                     stamp = self._stamp_from_us(ts_us)
+
                     self._handle_imu_sample(
-                        roll,
-                        pitch,
-                        yaw,
-                        accelx,
-                        accely,
-                        accelz,
-                        gyrox,
-                        gyroy,
-                        gyroz,
+                        roll, pitch, yaw,
+                        accelx, accely, accelz,
+                        gyrox, gyroy, gyroz,
                         stamp,
                         quat=quat,
                         orientation_cov=cov,
                     )
+                    # wheel encoder도 동일 stamp로 (EKF sync 좋아짐)
                     self._handle_encoder_sample(rpm, velocity, distance, stamp)
                 elif self.debugger:
                     try:
@@ -697,21 +667,22 @@ class threadRead(ThreadWithStop):
                     self._handle_encoder_sample(rpm, velocity, distance, stamp)
 
             if action == "imu":
-                if (len(buff) > 20):
+                if len(buff) > 20:
                     parts = [p.strip() for p in value.split(";") if p.strip() != ""]
                     if len(parts) >= 12:
-                        data = {
-                            "roll": parts[0],
-                            "pitch": parts[1],
-                            "yaw": parts[2],
-                        }
-                        data_str = str(data)
-                        self.imuDataSender.send(data_str)
+                        data = {"roll": parts[0], "pitch": parts[1], "yaw": parts[2]}
+                        self.imuDataSender.send(str(data))
+
                     imu_values = self._parse_imu_values(value)
                     if imu_values is not None:
                         roll, pitch, yaw, gyrox, gyroy, gyroz, accelx, accely, accelz, velx, vely, velz = imu_values
                         stamp = self._get_ros_now()
-                        self._handle_imu_sample(roll, pitch, yaw, accelx, accely, accelz, gyrox, gyroy, gyroz, stamp)
+                        self._handle_imu_sample(
+                            roll, pitch, yaw,
+                            accelx, accely, accelz,
+                            gyrox, gyroy, gyroz,
+                            stamp
+                        )
                 else:
                     splittedValue = value.split(";")
                     self.imuAckSender.send(splittedValue[0])
@@ -722,19 +693,18 @@ class threadRead(ThreadWithStop):
 
             elif action == "speed":
                 speed = value.split(",")[0]
-                if (lambda v: (lambda: float(v), True)[1] if isinstance(v, str) else False)(speed):
+                if self.is_float(speed):
                     self.currentSpeedSender.send(float(speed))
 
             elif action == "steer":
                 steer = value.split(",")[0]
-                if (lambda v: (lambda: float(v), True)[1] if isinstance(v, str) else False)(steer):
+                if self.is_float(steer):
                     self.currentSteerSender.send(float(steer))
 
             elif action == "vcdCalib":
                 splittedValue = value.split(";")
                 speedPWM = splittedValue[0]
                 steerPWM = splittedValue[1]
-
                 if speedPWM == "0" and steerPWM == "0":
                     self.calibRunDoneSender.send(True)
                 else:
@@ -778,7 +748,6 @@ class threadRead(ThreadWithStop):
                 os.system("sudo shutdown -h now")
 
     def _log_encoder(self, raw_msg, value):
-        """Log raw encoder payload for debugging when enabled."""
         if not (self.debug_encoder or self.debugger):
             return
         msg = f"[ENCODER] raw={raw_msg} value={value}"
@@ -793,11 +762,9 @@ class threadRead(ThreadWithStop):
         if message == "syntax error":
             print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m - Invalid \033[94m{action.upper()}\033[0m value (expected {self.expectedValues[action]})")
             return False
-
         if message == "kl 15/30 is required!!":
             print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m - KL 15/30 required for \033[94m{action.upper()}\033[0m")
             return False
-
         if message == "ack":
             return False
         return True
@@ -810,7 +777,6 @@ class threadRead(ThreadWithStop):
         return True
 
     def _should_send_error(self):
-        """Check if we should send an error message (rate limiting)."""
         now = datetime.now()
         if self.last_error_time is None or (now - self.last_error_time) >= self.error_cooldown:
             self.last_error_time = now
