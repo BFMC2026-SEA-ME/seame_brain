@@ -150,6 +150,10 @@ class threadRead(ThreadWithStop):
         # sigma_v [m/s]. 기본 0.05 (상황 따라 0.03~0.10 조절)
         self._wheel_sigma_v = self._read_float_env("WHEEL_SIGMA_V", 0.05)
 
+        # >>> FIX: unused dimensions' variance (make covariance invertible & "ignored")
+        # vy/vz/vroll/vpitch/vyaw variance. 아주 크게 주면 EKF가 사실상 안 믿음.
+        self._wheel_other_var = self._read_float_env("WHEEL_OTHER_VAR", 1e3)
+
         # For imuenc time
         self._imuenc_time_base_us = None
         self._imuenc_time_base_ros_ns = None
@@ -417,12 +421,22 @@ class threadRead(ThreadWithStop):
         else:
             msg.linear_acceleration_covariance = [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
+    # >>> FIX: make 6x6 twist covariance invertible (fill diagonal for all 6 twist vars)
+    # TwistWithCovarianceStamped.covariance is 6x6 row-major:
+    # [vx, vy, vz, vroll, vpitch, vyaw]
     def _wheel_twist_cov36(self):
-        """TwistWithCovarianceStamped covariance(36) with only linear.x variance set."""
         sigma_v = float(self._wheel_sigma_v)
-        var_v = sigma_v * sigma_v
+        var_vx = sigma_v * sigma_v
+        other_var = float(self._wheel_other_var)
+
         cov = [0.0] * 36
-        cov[0] = var_v  # linear.x
+        # diagonal indices in 6x6 => 0, 7, 14, 21, 28, 35
+        cov[0]  = var_vx     # vx
+        cov[7]  = other_var  # vy
+        cov[14] = other_var  # vz
+        cov[21] = other_var  # vroll
+        cov[28] = other_var  # vpitch
+        cov[35] = other_var  # vyaw
         return cov
 
     # ---------------- Publishers ----------------
@@ -509,6 +523,8 @@ class threadRead(ThreadWithStop):
         Publish:
           - /wheel_encoder (Vector3Stamped) for backward compat
           - /wheel_twist  (TwistWithCovarianceStamped) for robot_localization twist0
+
+        IMPORTANT: stamp is shared with IMU if called from imuenc.
         """
         if not self._init_ros():
             return
@@ -530,18 +546,25 @@ class threadRead(ThreadWithStop):
             except Exception as exc:
                 print(f"[SerialHandler] ROS2 wheel_encoder publish failed: {exc}")
 
-        # 2) NEW /wheel_twist 추가
+        # 2) NEW /wheel_twist
         if self._wheel_twist_pub is not None and TwistWithCovarianceStamped is not None:
             tmsg = TwistWithCovarianceStamped()
             self._apply_stamp(tmsg, stamp)
             tmsg.header.frame_id = self._wheel_twist_frame  # base_link
+
+            # linear velocity in base_link frame
             tmsg.twist.twist.linear.x = float(velocity)
             tmsg.twist.twist.linear.y = 0.0
             tmsg.twist.twist.linear.z = 0.0
+
+            # angular unknown -> keep 0, but covariance sets them "very uncertain"
             tmsg.twist.twist.angular.x = 0.0
             tmsg.twist.twist.angular.y = 0.0
             tmsg.twist.twist.angular.z = 0.0
+
+            # >>> FIX: invertible covariance (all diagonal filled)
             tmsg.twist.covariance = self._wheel_twist_cov36()
+
             try:
                 self._wheel_twist_pub.publish(tmsg)
             except Exception as exc:
@@ -641,6 +664,7 @@ class threadRead(ThreadWithStop):
 
                     stamp = self._stamp_from_us(ts_us)
 
+                    # IMU + Wheel(encoder+twist) share SAME stamp  (요구사항 충족)
                     self._handle_imu_sample(
                         roll, pitch, yaw,
                         accelx, accely, accelz,
@@ -649,7 +673,6 @@ class threadRead(ThreadWithStop):
                         quat=quat,
                         orientation_cov=cov,
                     )
-                    # wheel encoder도 동일 stamp로 (EKF sync 좋아짐)
                     self._handle_encoder_sample(rpm, velocity, distance, stamp)
                 elif self.debugger:
                     try:
