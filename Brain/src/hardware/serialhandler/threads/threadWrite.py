@@ -27,6 +27,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 
 import json
+import os
 import threading
 import time
 from datetime import datetime, timedelta
@@ -77,6 +78,8 @@ class threadWrite(ThreadWithStop):
         self.running = False
         self.engineEnabled = False
         self._stop_latched = False
+        self._stop_sent = False
+        self._stop_kl_on_stop = os.getenv("STOP_HARD_KL0", "0").lower() in ("1", "true", "yes", "y")
         self.messageConverter = MessageConverter()
         self.steerMotorSender = messageHandlerSender(self.queuesList, SteerMotor)
         self.speedMotorSender = messageHandlerSender(self.queuesList, SpeedMotor)
@@ -140,6 +143,17 @@ class threadWrite(ThreadWithStop):
         self.send_to_serial({"action": "steer", "steerAngle": 0})
         self._drain_motion_pipes()
 
+    def _apply_stop_once(self):
+        if self._stop_sent:
+            return
+        self._send_immediate_stop()
+        if self._stop_kl_on_stop:
+            # Hard cut: disable KL to stop any ongoing MCU control loop.
+            self.send_to_serial({"action": "kl", "mode": 0})
+            self.running = False
+            self.engineEnabled = False
+        self._stop_sent = True
+
     def _drain_motion_pipes(self):
         """Drop any queued motion commands to avoid stale commands after stop."""
         self.brakeSubscriber.empty()
@@ -188,7 +202,6 @@ class threadWrite(ThreadWithStop):
                 state_lower = str(stateRecv).lower()
                 if state_lower == "stop":
                     self._stop_latched = True
-                    self._send_immediate_stop()
                 else:
                     self._stop_latched = False
 
@@ -197,7 +210,6 @@ class threadWrite(ThreadWithStop):
                 mode_lower = str(modeRecv).lower()
                 if mode_lower == "stop":
                     self._stop_latched = True
-                    self._send_immediate_stop()
                 else:
                     self._stop_latched = False
 
@@ -239,8 +251,10 @@ class threadWrite(ThreadWithStop):
 
             if self._stop_latched:
                 # While stopped, ignore any motion commands.
+                self._apply_stop_once()
                 self._drain_motion_pipes()
             elif self.running:
+                self._stop_sent = False
                 if self.engineEnabled:
                     brakeRecv = self.brakeSubscriber.receive()
                     if brakeRecv is not None:
