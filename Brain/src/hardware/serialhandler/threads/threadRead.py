@@ -150,6 +150,13 @@ class threadRead(ThreadWithStop):
         # sigma_v [m/s]. 기본 0.05 (상황 따라 0.03~0.10 조절)
         self._wheel_sigma_v = self._read_float_env("WHEEL_SIGMA_V", 0.05)
 
+        # Wheel encoder scaling (velocity/distance). 기본값 1.0 = 보정 없음
+        # 예) 실제 1.0m / 측정 0.972m => WHEEL_DIST_SCALE=1.028
+        self._wheel_dist_scale = self._read_float_env("WHEEL_DIST_SCALE", 1.0)
+        self._wheel_vel_scale = self._read_float_env("WHEEL_VEL_SCALE", 1.0)
+        # 누적거리 오프셋 보정 (필요 시)
+        self._wheel_dist_bias = self._read_float_env("WHEEL_DIST_BIAS", 0.0)
+
         # >>> FIX: unused dimensions' variance (make covariance invertible & "ignored")
         # vy/vz/vroll/vpitch/vyaw variance. 아주 크게 주면 EKF가 사실상 안 믿음.
         self._wheel_other_var = self._read_float_env("WHEEL_OTHER_VAR", 1e3)
@@ -439,6 +446,12 @@ class threadRead(ThreadWithStop):
         cov[35] = other_var  # vyaw
         return cov
 
+    def _apply_wheel_scale(self, rpm, velocity, distance):
+        # rpm은 raw로 유지 (wheel encoder의 기본 출력 의미 보존)
+        v = float(velocity) * float(self._wheel_vel_scale)
+        d = (float(distance) * float(self._wheel_dist_scale)) + float(self._wheel_dist_bias)
+        return rpm, v, d
+
     # ---------------- Publishers ----------------
     def _publish_imu(self, roll, pitch, yaw, accelx, accely, accelz, gyrox, gyroy, gyroz,
                      stamp=None, quat=None, orientation_cov=None, angular_cov=None, linear_cov=None):
@@ -530,6 +543,7 @@ class threadRead(ThreadWithStop):
             return
 
         rpm, velocity, distance = values
+        rpm, velocity, distance = self._apply_wheel_scale(rpm, velocity, distance)
         if stamp is None:
             stamp = self._get_ros_now()
 
