@@ -279,6 +279,13 @@ class processDashboard(WorkerProcess):
         # 다른 컴포넌트(예: cmd_vel 브릿지)가 DrivingMode를 구독할 수 있도록 큐로도 전파
         self.send_message_to_brain("DrivingMode", dataDict)
 
+        # STOP 모드 진입 시 즉시 정지 명령 전송 (KL 상태는 건드리지 않음)
+        mode_value = str(dataDict.get("Value", "")).lower()
+        if mode_value == "stop":
+            self.send_message_to_brain("SpeedMotor", {"Value": "0"})
+            self.send_message_to_brain("SteerMotor", {"Value": "0"})
+            self.send_message_to_brain("Brake", {"Value": "0"})
+
 
     def handle_calibration(self, dataDict, socketId):
         """Handle calibration signals from frontend."""
