@@ -152,8 +152,8 @@ class threadRead(ThreadWithStop):
 
         # Wheel encoder scaling (velocity/distance). 기본값 1.0 = 보정 없음
         # 예) 실제 1.0m / 측정 0.972m => WHEEL_DIST_SCALE=1.028
-        self._wheel_dist_scale = self._read_float_env("WHEEL_DIST_SCALE", 1.032)
-        self._wheel_vel_scale = self._read_float_env("WHEEL_VEL_SCALE", 1.032)
+        self._wheel_dist_scale = self._read_float_env("WHEEL_DIST_SCALE", 1.042)
+        self._wheel_vel_scale = self._read_float_env("WHEEL_VEL_SCALE", 1.042)
         # 누적거리 오프셋 보정 (필요 시)
         self._wheel_dist_bias = self._read_float_env("WHEEL_DIST_BIAS", 0.0)
 
