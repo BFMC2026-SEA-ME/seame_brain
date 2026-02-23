@@ -323,6 +323,15 @@ class processDashboard(WorkerProcess):
             self.stateMachine.request_mode(f"dashboard_{dataDict['Value']}_button")
         except Exception:
             pass
+        # 다른 컴포넌트가 DrivingMode를 구독할 수 있도록 큐로도 전파
+        self.send_message_to_brain("DrivingMode", dataDict)
+
+        # STOP 모드 진입 시 즉시 정지 명령 전송 (KL 상태는 건드리지 않음)
+        mode_value = str(dataDict.get("Value", "")).lower()
+        if mode_value == "stop":
+            self.send_message_to_brain("SpeedMotor", {"Value": "0"})
+            self.send_message_to_brain("SteerMotor", {"Value": "0"})
+            self.send_message_to_brain("Brake", {"Value": "0"})
 
     def handle_calibration(self, dataDict: dict[str, Any], socketId: str) -> None:
         if self.calibration is None:

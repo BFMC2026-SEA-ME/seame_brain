@@ -40,7 +40,6 @@ from src.utils.messages.allMessages import (
     SpeedMotor,
     Brake,
     DrivingMode,
-    EmergencyStop,
     ToggleBatteryLvl,
     ToggleImuData,
     ToggleInstant,
@@ -104,7 +103,6 @@ class threadWrite(ThreadWithStop):
         self.speedMotorSubscriber = messageHandlerSubscriber(self.queuesList, SpeedMotor, "lastOnly", True)
         self.brakeSubscriber = messageHandlerSubscriber(self.queuesList, Brake, "lastOnly", True)
         self.drivingModeSubscriber = messageHandlerSubscriber(self.queuesList, DrivingMode, "lastOnly", True)
-        self.emergencyStopSubscriber = messageHandlerSubscriber(self.queuesList, EmergencyStop, "lastOnly", True)
         self.instantSubscriber = messageHandlerSubscriber(self.queuesList, ToggleInstant, "lastOnly", True)
         self.batterySubscriber = messageHandlerSubscriber(self.queuesList, ToggleBatteryLvl, "lastOnly", True)
         self.resourceMonitorSubscriber = messageHandlerSubscriber(self.queuesList, ToggleResourceMonitor, "lastOnly", True)
@@ -182,14 +180,6 @@ class threadWrite(ThreadWithStop):
     def thread_work(self):
         """In this function we check if we got the enable engine signal. After we got it we will start getting messages from raspberry PI. It will transform them into NUCLEO commands and send them."""
         try:
-            # Emergency stop has highest priority
-            emergencyRecv = self.emergencyStopSubscriber.receive()
-            if emergencyRecv is not None:
-                if self.debugger:
-                    self.logger.info(f"EmergencyStop received: {emergencyRecv}")
-                self._stop_latched = True
-                self._send_immediate_stop()
-
             modeRecv = self.drivingModeSubscriber.receive()
             if modeRecv is not None:
                 mode_lower = str(modeRecv).lower()

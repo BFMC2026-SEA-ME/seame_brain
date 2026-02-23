@@ -45,6 +45,7 @@ class AckermannBridgeNode(Node):
         super().__init__("ackermann_bridge")
         self._queues_list = queues_list
         self._auto_active = False
+        self._pending_cmd: Optional[tuple[str, str]] = None
 
         # BFMC message handlers
         self._driving_mode_subscriber = messageHandlerSubscriber(
@@ -91,6 +92,10 @@ class AckermannBridgeNode(Node):
         # Driving mode polling (50 Hz)
         self._mode_poll_timer = self.create_timer(0.02, self._poll_driving_mode)
 
+        # Ackermann 출력은 30 Hz로 제한
+        self._send_period = 1.0 / 30.0
+        self._send_timer = self.create_timer(self._send_period, self._publish_pending_cmd)
+
         self.get_logger().info(
             f"Ackermann bridge subscribed: {self._ackermann_topic} (AUTO only)"
         )
@@ -103,12 +108,19 @@ class AckermannBridgeNode(Node):
             return
 
         mode_lower = mode.lower()
-        if mode_lower == "auto" and not self._auto_active:
-            self.get_logger().info("AUTO mode activated – Ackermann bridge enabled.")
+        was_auto = self._auto_active
+        if mode_lower == "auto":
+            if not was_auto:
+                self.get_logger().info("AUTO mode activated – Ackermann bridge enabled.")
             self._auto_active = True
-        elif mode_lower != "auto" and self._auto_active:
+            return
+
+        if was_auto:
             self.get_logger().info(f"AUTO mode exit ({mode_lower}); bridge paused.")
-            self._auto_active = False
+        self._auto_active = False
+
+        if was_auto or mode_lower == "stop":
+            self._send_stop_command()
 
     def _handle_ackermann(self, msg: AckermannDriveStamped) -> None:
         # AUTO 상태에서 AckermannDriveStamped를 Speed/Steer로 변환합니다.
@@ -121,8 +133,8 @@ class AckermannBridgeNode(Node):
         speed_cmd = self._scale_speed(msg.drive.speed)
         steer_cmd = self._scale_steer(msg.drive.steering_angle)
 
-        self._speed_sender.send(speed_cmd)
-        self._steer_sender.send(steer_cmd)
+        # 30 Hz 제한을 위해 마지막 명령만 저장
+        self._pending_cmd = (speed_cmd, steer_cmd)
 
         # self.get_logger().debug(
         #     f"{self._ackermann_topic} -> speed={msg.drive.speed:.3f} "
@@ -156,6 +168,24 @@ class AckermannBridgeNode(Node):
             steer_value = max(-self._steer_limit, min(self._steer_limit, steer_value))
 
         return str(int(round(steer_value)))
+
+    def _publish_pending_cmd(self) -> None:
+        """Send latest command at 30 Hz max."""
+        if not self._auto_active:
+            self._pending_cmd = None
+            return
+        if self._pending_cmd is None:
+            return
+        speed_cmd, steer_cmd = self._pending_cmd
+        self._speed_sender.send(speed_cmd)
+        self._steer_sender.send(steer_cmd)
+        self._pending_cmd = None
+
+    def _send_stop_command(self) -> None:
+        """Send a single stop command and clear pending."""
+        self._speed_sender.send("0")
+        self._steer_sender.send("0")
+        self._pending_cmd = None
 
 
 class _AckermannBridgeThread(ThreadWithStop):
