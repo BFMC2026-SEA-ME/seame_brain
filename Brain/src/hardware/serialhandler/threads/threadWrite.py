@@ -40,6 +40,7 @@ from src.utils.messages.allMessages import (
     SpeedMotor,
     Brake,
     DrivingMode,
+    StateChange,
     ToggleBatteryLvl,
     ToggleImuData,
     ToggleInstant,
@@ -103,6 +104,7 @@ class threadWrite(ThreadWithStop):
         self.speedMotorSubscriber = messageHandlerSubscriber(self.queuesList, SpeedMotor, "lastOnly", True)
         self.brakeSubscriber = messageHandlerSubscriber(self.queuesList, Brake, "lastOnly", True)
         self.drivingModeSubscriber = messageHandlerSubscriber(self.queuesList, DrivingMode, "lastOnly", True)
+        self.stateChangeSubscriber = messageHandlerSubscriber(self.queuesList, StateChange, "lastOnly", True)
         self.instantSubscriber = messageHandlerSubscriber(self.queuesList, ToggleInstant, "lastOnly", True)
         self.batterySubscriber = messageHandlerSubscriber(self.queuesList, ToggleBatteryLvl, "lastOnly", True)
         self.resourceMonitorSubscriber = messageHandlerSubscriber(self.queuesList, ToggleResourceMonitor, "lastOnly", True)
@@ -180,6 +182,16 @@ class threadWrite(ThreadWithStop):
     def thread_work(self):
         """In this function we check if we got the enable engine signal. After we got it we will start getting messages from raspberry PI. It will transform them into NUCLEO commands and send them."""
         try:
+            # Critical state-change (e.g., STOP) should preempt mode updates.
+            stateRecv = self.stateChangeSubscriber.receive()
+            if stateRecv is not None:
+                state_lower = str(stateRecv).lower()
+                if state_lower == "stop":
+                    self._stop_latched = True
+                    self._send_immediate_stop()
+                else:
+                    self._stop_latched = False
+
             modeRecv = self.drivingModeSubscriber.receive()
             if modeRecv is not None:
                 mode_lower = str(modeRecv).lower()

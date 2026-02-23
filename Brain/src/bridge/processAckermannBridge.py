@@ -32,7 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.templates.threadwithstop import ThreadWithStop  # type: ignore
-from src.utils.messages.allMessages import DrivingMode, SpeedMotor, SteerMotor  # type: ignore
+from src.utils.messages.allMessages import DrivingMode, SpeedMotor, SteerMotor, StateChange  # type: ignore
 from src.utils.messages.messageHandlerSender import messageHandlerSender  # type: ignore
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber  # type: ignore
 
@@ -50,6 +50,9 @@ class AckermannBridgeNode(Node):
         # BFMC message handlers
         self._driving_mode_subscriber = messageHandlerSubscriber(
             self._queues_list, DrivingMode, "lastOnly", True
+        )
+        self._state_change_subscriber = messageHandlerSubscriber(
+            self._queues_list, StateChange, "lastOnly", True
         )
 
         self._speed_sender = messageHandlerSender(self._queues_list, SpeedMotor)
@@ -102,13 +105,19 @@ class AckermannBridgeNode(Node):
 
     # ------------------------------------------------------------------ callbacks --
     def _poll_driving_mode(self) -> None:
-        # DrivingMode를 폴링해서 AUTO 게이트를 켜고 끕니다.
-        mode = self._driving_mode_subscriber.receive()
+        # StateChange (Critical) -> DrivingMode (General) 순으로 확인
+        mode = self._state_change_subscriber.receive()
+        if mode is None:
+            mode = self._driving_mode_subscriber.receive()
         if mode is None:
             return
 
-        mode_lower = mode.lower()
+        self._apply_mode(str(mode))
+
+    def _apply_mode(self, mode_value: str) -> None:
+        mode_lower = mode_value.lower()
         was_auto = self._auto_active
+
         if mode_lower == "auto":
             if not was_auto:
                 self.get_logger().info("AUTO mode activated – Ackermann bridge enabled.")
