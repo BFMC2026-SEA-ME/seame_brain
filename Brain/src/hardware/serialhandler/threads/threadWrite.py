@@ -145,6 +145,12 @@ class threadWrite(ThreadWithStop):
         self.send_to_serial({"action": "steer", "steerAngle": 0})
         self._drain_motion_pipes()
 
+    def force_stop(self):
+        """Force an immediate stop (used by processSerialHandler on STOP)."""
+        self._stop_latched = True
+        self._stop_sent = False
+        self._send_immediate_stop()
+
     def _apply_stop_once(self):
         if self._stop_sent:
             return
