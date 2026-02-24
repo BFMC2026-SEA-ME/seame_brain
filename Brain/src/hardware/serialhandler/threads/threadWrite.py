@@ -138,8 +138,21 @@ class threadWrite(ThreadWithStop):
                     self.serialConnectionStateSender.send(False)
                     print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;91mERROR\033[0m - Failed to write to serial ({e})")
 
+    def _flush_serial_output(self):
+        """Drop any pending bytes in the serial output buffer."""
+        try:
+            with self.process.serialLock:
+                serialCon = self.process.serialCon
+                if serialCon and self.process.serialConnected and serialCon.is_open:
+                    serialCon.reset_output_buffer()
+        except Exception as e:
+            if self._should_send_error():
+                print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m - Failed to flush serial output ({e})")
+
     def _send_immediate_stop(self):
         """Send a hard stop to NUCLEO and clear motion pipes."""
+        # Ensure stop commands aren't stuck behind buffered output.
+        self._flush_serial_output()
         self.send_to_serial({"action": "brake", "steerAngle": 0})
         self.send_to_serial({"action": "speed", "speed": 0})
         self.send_to_serial({"action": "steer", "steerAngle": 0})
