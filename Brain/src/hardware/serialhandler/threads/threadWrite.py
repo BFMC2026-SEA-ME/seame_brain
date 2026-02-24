@@ -198,20 +198,23 @@ class threadWrite(ThreadWithStop):
         try:
             # Critical state-change (e.g., STOP) should preempt mode updates.
             stateRecv = self.stateChangeSubscriber.receive()
+            state_override = stateRecv is not None
             if stateRecv is not None:
                 state_lower = str(stateRecv).lower()
                 if state_lower == "stop":
                     self._stop_latched = True
+                    self._send_immediate_stop()
                 else:
                     self._stop_latched = False
 
-            modeRecv = self.drivingModeSubscriber.receive()
-            if modeRecv is not None:
-                mode_lower = str(modeRecv).lower()
-                if mode_lower == "stop":
-                    self._stop_latched = True
-                else:
-                    self._stop_latched = False
+            if not state_override:
+                modeRecv = self.drivingModeSubscriber.receive()
+                if modeRecv is not None:
+                    mode_lower = str(modeRecv).lower()
+                    if mode_lower == "stop":
+                        self._stop_latched = True
+                    else:
+                        self._stop_latched = False
 
             klRecv = self.klSubscriber.receive()
             if klRecv is not None:
