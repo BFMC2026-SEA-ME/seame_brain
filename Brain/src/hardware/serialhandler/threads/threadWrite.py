@@ -41,6 +41,7 @@ from src.utils.messages.allMessages import (
     SpeedMotor,
     Brake,
     DrivingMode,
+    EmergencyStop,
     StateChange,
     ToggleBatteryLvl,
     ToggleImuData,
@@ -107,6 +108,7 @@ class threadWrite(ThreadWithStop):
         self.speedMotorSubscriber = messageHandlerSubscriber(self.queuesList, SpeedMotor, "lastOnly", True)
         self.brakeSubscriber = messageHandlerSubscriber(self.queuesList, Brake, "lastOnly", True)
         self.drivingModeSubscriber = messageHandlerSubscriber(self.queuesList, DrivingMode, "lastOnly", True)
+        self.emergencyStopSubscriber = messageHandlerSubscriber(self.queuesList, EmergencyStop, "lastOnly", True)
         self.stateChangeSubscriber = messageHandlerSubscriber(self.queuesList, StateChange, "lastOnly", True)
         self.instantSubscriber = messageHandlerSubscriber(self.queuesList, ToggleInstant, "lastOnly", True)
         self.batterySubscriber = messageHandlerSubscriber(self.queuesList, ToggleBatteryLvl, "lastOnly", True)
@@ -196,22 +198,34 @@ class threadWrite(ThreadWithStop):
     def thread_work(self):
         """In this function we check if we got the enable engine signal. After we got it we will start getting messages from raspberry PI. It will transform them into NUCLEO commands and send them."""
         try:
-            # Critical state-change (e.g., STOP) should preempt mode updates.
-            stateRecv = self.stateChangeSubscriber.receive()
-            if stateRecv is not None:
-                state_lower = str(stateRecv).lower()
-                if state_lower == "stop":
-                    self._stop_latched = True
-                else:
-                    self._stop_latched = False
+            # EmergencyStop (Critical) should preempt any mode updates in this cycle.
+            emergencyRecv = self.emergencyStopSubscriber.receive()
+            emergency_override = emergencyRecv is not None
+            if emergency_override:
+                self._stop_latched = True
+                self._send_immediate_stop()
 
-            modeRecv = self.drivingModeSubscriber.receive()
-            if modeRecv is not None:
-                mode_lower = str(modeRecv).lower()
-                if mode_lower == "stop":
-                    self._stop_latched = True
-                else:
-                    self._stop_latched = False
+            # Critical state-change (e.g., STOP) should preempt mode updates.
+            stateRecv = None
+            state_override = False
+            if not emergency_override:
+                stateRecv = self.stateChangeSubscriber.receive()
+                state_override = stateRecv is not None
+                if stateRecv is not None:
+                    state_lower = str(stateRecv).lower()
+                    if state_lower == "stop":
+                        self._stop_latched = True
+                    else:
+                        self._stop_latched = False
+
+            if not emergency_override and not state_override:
+                modeRecv = self.drivingModeSubscriber.receive()
+                if modeRecv is not None:
+                    mode_lower = str(modeRecv).lower()
+                    if mode_lower == "stop":
+                        self._stop_latched = True
+                    else:
+                        self._stop_latched = False
 
             klRecv = self.klSubscriber.receive()
             if klRecv is not None:

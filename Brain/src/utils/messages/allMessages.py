@@ -194,6 +194,12 @@ class RequestSteerLimits(Enum):
     msgID = 20
     msgType = "bool"
 
+class EmergencyStop(Enum):
+    Queue = "Critical"
+    Owner = "Dashboard"
+    msgID = 21
+    msgType = "bool"
+
 
 ################################# From Nucleo ##################################
 class BatteryLvl(Enum):
