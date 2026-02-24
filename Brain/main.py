@@ -64,10 +64,6 @@ try:
 except:
     print("Fail to use psutil ")
 
-# STOP handling defaults (override with env if needed)
-os.environ.setdefault("STOP_HARD_KL0", "1")
-os.environ.setdefault("STOP_REPEAT_SEC", "0.05")
-
 # 모듈 검색 경로 추가 , 공용 메세지 큐 설정--> 모든 프로세스 여기서 통신 
 sys.path.append(".")
 from multiprocessing import Queue, Event
@@ -151,6 +147,16 @@ def _flush_motion_from_general(queue_list):
     for msg in kept:
         general_q.put(msg)
     return dropped, len(kept)
+
+def _pause_auto_bridges(cmdvel_bridge, ackermann_bridge):
+    for proc in (cmdvel_bridge, ackermann_bridge):
+        if proc is not None and proc.is_alive():
+            proc.pause_threads()
+
+def _resume_auto_bridges(cmdvel_bridge, ackermann_bridge):
+    for proc in (cmdvel_bridge, ackermann_bridge):
+        if proc is not None and proc.is_alive():
+            proc.resume_threads()
 
 # ======================================== SETTING UP ====================================
 
@@ -288,6 +294,12 @@ try:
 
             processSemaphore = manage_process_life(processSemaphores, processSemaphore, [queueList, logging, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
             processTrafficCom = manage_process_life(processTrafficCommunication, processTrafficCom, [queueList, logging, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
+
+            # Stop auto-bridges immediately on STOP, resume on AUTO.
+            if message == "AUTO":
+                _resume_auto_bridges(processCmdVelBridge, processAckermannBridge)
+            else:
+                _pause_auto_bridges(processCmdVelBridge, processAckermannBridge)
 
             # Immediate STOP handling: drop motion backlog and send stop commands again.
             if message == "STOP":
