@@ -153,6 +153,8 @@ class threadWrite(ThreadWithStop):
         """Send a hard stop to NUCLEO and clear motion pipes."""
         # Ensure stop commands aren't stuck behind buffered output.
         self._flush_serial_output()
+        # Cancel any ongoing VCD (time-based) run first.
+        self.send_to_serial({"action": "vcd", "time": 0, "speed": 0, "steer": 0})
         self.send_to_serial({"action": "brake", "steerAngle": 0})
         self.send_to_serial({"action": "speed", "speed": 0})
         self.send_to_serial({"action": "steer", "steerAngle": 0})
