@@ -42,6 +42,7 @@ import sys
 import time
 import os
 import psutil
+from queue import Empty
 
 # Process enable flags
 ENABLE_GATEWAY = True
@@ -63,6 +64,10 @@ try:
 except:
     print("Fail to use psutil ")
 
+# STOP handling defaults (override with env if needed)
+os.environ.setdefault("STOP_HARD_KL0", "1")
+os.environ.setdefault("STOP_REPEAT_SEC", "0.05")
+
 # 모듈 검색 경로 추가 , 공용 메세지 큐 설정--> 모든 프로세스 여기서 통신 
 sys.path.append(".")
 from multiprocessing import Queue, Event
@@ -82,7 +87,8 @@ from src.hardware.serialhandler.processSerialHandler import processSerialHandler
 from src.data.Semaphores.processSemaphores import processSemaphores
 from src.data.TrafficCommunication.processTrafficCommunication import processTrafficCommunication
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
-from src.utils.messages.allMessages import StateChange
+from src.utils.messages.messageHandlerSender import messageHandlerSender
+from src.utils.messages.allMessages import StateChange, SpeedMotor, SteerMotor, Brake
 from src.statemachine.stateMachine import StateMachine
 from src.statemachine.systemMode import SystemMode
 
@@ -124,6 +130,28 @@ def manage_process_life(process_class, process_instance, process_args, enabled, 
             process_instance = None
     return process_instance 
 
+# ===================================== STOP HELPERS ==================================
+
+def _flush_motion_from_general(queue_list):
+    """Drop motion commands (Speed/Steer/Control/Brake) from General queue."""
+    general_q = queue_list.get("General")
+    if general_q is None:
+        return 0, 0
+    kept = []
+    dropped = 0
+    while True:
+        try:
+            msg = general_q.get_nowait()
+        except Empty:
+            break
+        if isinstance(msg, dict) and msg.get("Owner") == "Dashboard" and msg.get("msgID") in (1, 2, 3, 4):
+            dropped += 1
+            continue
+        kept.append(msg)
+    for msg in kept:
+        general_q.put(msg)
+    return dropped, len(kept)
+
 # ======================================== SETTING UP ====================================
 
 print(BigPrint.PLEASE_WAIT.value)
@@ -143,6 +171,9 @@ logging = logging.getLogger()
 
 stateChangeSubscriber = messageHandlerSubscriber(queueList, StateChange, "lastOnly", True)
 StateMachine.initialize_shared_state(queueList)
+stop_speed_sender = messageHandlerSender(queueList, SpeedMotor)
+stop_steer_sender = messageHandlerSender(queueList, SteerMotor)
+stop_brake_sender = messageHandlerSender(queueList, Brake)
 
 # Initializing gateway
 if ENABLE_GATEWAY:
@@ -257,6 +288,13 @@ try:
 
             processSemaphore = manage_process_life(processSemaphores, processSemaphore, [queueList, logging, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
             processTrafficCom = manage_process_life(processTrafficCommunication, processTrafficCom, [queueList, logging, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
+
+            # Immediate STOP handling: drop motion backlog and send stop commands again.
+            if message == "STOP":
+                _flush_motion_from_general(queueList)
+                stop_speed_sender.send("0")
+                stop_steer_sender.send("0")
+                stop_brake_sender.send("0")
 
         blocker.wait(0.1) # 0.1초 간격으로 루프를 텀핑 
 

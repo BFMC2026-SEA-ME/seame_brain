@@ -80,6 +80,8 @@ class threadWrite(ThreadWithStop):
         self._stop_latched = False
         self._stop_sent = False
         self._stop_kl_on_stop = os.getenv("STOP_HARD_KL0", "0").lower() in ("1", "true", "yes", "y")
+        self._stop_repeat_interval = float(os.getenv("STOP_REPEAT_SEC", "0.1"))
+        self._last_stop_send = 0.0
         self.messageConverter = MessageConverter()
         self.steerMotorSender = messageHandlerSender(self.queuesList, SteerMotor)
         self.speedMotorSender = messageHandlerSender(self.queuesList, SpeedMotor)
@@ -143,8 +145,9 @@ class threadWrite(ThreadWithStop):
         self.send_to_serial({"action": "steer", "steerAngle": 0})
         self._drain_motion_pipes()
 
-    def _apply_stop_once(self):
-        if self._stop_sent:
+    def _apply_stop(self):
+        now = time.monotonic()
+        if self._stop_sent and (now - self._last_stop_send) < self._stop_repeat_interval:
             return
         self._send_immediate_stop()
         if self._stop_kl_on_stop:
@@ -153,6 +156,13 @@ class threadWrite(ThreadWithStop):
             self.running = False
             self.engineEnabled = False
         self._stop_sent = True
+        self._last_stop_send = now
+
+    def force_stop(self):
+        """Force an immediate stop, used by the process on STOP mode changes."""
+        self._stop_latched = True
+        self._stop_sent = False
+        self._apply_stop()
 
     def _drain_motion_pipes(self):
         """Drop any queued motion commands to avoid stale commands after stop."""
@@ -254,7 +264,7 @@ class threadWrite(ThreadWithStop):
 
             if self._stop_latched:
                 # While stopped, ignore any motion commands.
-                self._apply_stop_once()
+                self._apply_stop()
                 self._drain_motion_pipes()
             elif self.running:
                 self._stop_sent = False
