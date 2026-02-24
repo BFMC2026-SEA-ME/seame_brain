@@ -203,12 +203,6 @@ class processSerialHandler(WorkerProcess):
         if message is not None:
             modeDict = SystemMode[message].value["serial_handler"]["process"]
 
-            if message == "STOP" and hasattr(self, "_write_thread") and self._write_thread:
-                try:
-                    self._write_thread.force_stop()
-                except Exception as exc:
-                    print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m - Force stop failed: {exc}")
-
             if modeDict["enabled"] == True:
                 # only resume if serial is connected
                 if self.serialConnected:
@@ -235,7 +229,6 @@ class processSerialHandler(WorkerProcess):
         """Initializes the read and the write thread."""
         readTh = threadRead(self, self.historyFile, self.queuesList, self.logger, self.debugging)
         writeTh = threadWrite(self, self.historyFile, self.queuesList, self.logger, self.debugging, self.example)
-        self._write_thread = writeTh
         self.threads.extend([readTh, writeTh])
 
         if not self.serialConnected:
