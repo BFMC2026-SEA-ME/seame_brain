@@ -42,7 +42,6 @@ import sys
 import time
 import os
 import psutil
-from queue import Empty
 
 # Process enable flags
 ENABLE_GATEWAY = True
@@ -83,8 +82,7 @@ from src.hardware.serialhandler.processSerialHandler import processSerialHandler
 from src.data.Semaphores.processSemaphores import processSemaphores
 from src.data.TrafficCommunication.processTrafficCommunication import processTrafficCommunication
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
-from src.utils.messages.messageHandlerSender import messageHandlerSender
-from src.utils.messages.allMessages import StateChange, SpeedMotor, SteerMotor, Brake
+from src.utils.messages.allMessages import StateChange
 from src.statemachine.stateMachine import StateMachine
 from src.statemachine.systemMode import SystemMode
 
@@ -126,38 +124,6 @@ def manage_process_life(process_class, process_instance, process_args, enabled, 
             process_instance = None
     return process_instance 
 
-# ===================================== STOP HELPERS ==================================
-
-def _flush_motion_from_general(queue_list):
-    """Drop motion commands (Speed/Steer/Control/Brake) from General queue."""
-    general_q = queue_list.get("General")
-    if general_q is None:
-        return 0, 0
-    kept = []
-    dropped = 0
-    while True:
-        try:
-            msg = general_q.get_nowait()
-        except Empty:
-            break
-        if isinstance(msg, dict) and msg.get("Owner") == "Dashboard" and msg.get("msgID") in (1, 2, 3, 4):
-            dropped += 1
-            continue
-        kept.append(msg)
-    for msg in kept:
-        general_q.put(msg)
-    return dropped, len(kept)
-
-def _pause_auto_bridges(cmdvel_bridge, ackermann_bridge):
-    for proc in (cmdvel_bridge, ackermann_bridge):
-        if proc is not None and proc.is_alive():
-            proc.pause_threads()
-
-def _resume_auto_bridges(cmdvel_bridge, ackermann_bridge):
-    for proc in (cmdvel_bridge, ackermann_bridge):
-        if proc is not None and proc.is_alive():
-            proc.resume_threads()
-
 # ======================================== SETTING UP ====================================
 
 print(BigPrint.PLEASE_WAIT.value)
@@ -177,9 +143,6 @@ logging = logging.getLogger()
 
 stateChangeSubscriber = messageHandlerSubscriber(queueList, StateChange, "lastOnly", True)
 StateMachine.initialize_shared_state(queueList)
-stop_speed_sender = messageHandlerSender(queueList, SpeedMotor)
-stop_steer_sender = messageHandlerSender(queueList, SteerMotor)
-stop_brake_sender = messageHandlerSender(queueList, Brake)
 
 # Initializing gateway
 if ENABLE_GATEWAY:
@@ -294,19 +257,6 @@ try:
 
             processSemaphore = manage_process_life(processSemaphores, processSemaphore, [queueList, logging, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
             processTrafficCom = manage_process_life(processTrafficCommunication, processTrafficCom, [queueList, logging, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
-
-            # Stop auto-bridges immediately on STOP, resume on AUTO.
-            if message == "AUTO":
-                _resume_auto_bridges(processCmdVelBridge, processAckermannBridge)
-            else:
-                _pause_auto_bridges(processCmdVelBridge, processAckermannBridge)
-
-            # Immediate STOP handling: drop motion backlog and send stop commands again.
-            if message == "STOP":
-                _flush_motion_from_general(queueList)
-                stop_speed_sender.send("0")
-                stop_steer_sender.send("0")
-                stop_brake_sender.send("0")
 
         blocker.wait(0.1) # 0.1초 간격으로 루프를 텀핑 
 
