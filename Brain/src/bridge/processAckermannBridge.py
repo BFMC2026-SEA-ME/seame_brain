@@ -161,7 +161,7 @@ class AckermannBridgeNode(Node):
         # 조향각(rad/deg)을 모터 명령 문자열로 스케일링합니다.
         # ROS Ackermann convention: + = left
         # Hardware: + = right  => flip sign once here
-        steer_value = steering_angle # +일때 오른쪽, -일때 왼쪽으로 가도록 (하드웨어에 맞게)
+        steer_value = -steering_angle  
 
         # Optional: convert to degrees before scaling
         if self._steer_use_degrees:
