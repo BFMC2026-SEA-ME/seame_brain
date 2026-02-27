@@ -37,7 +37,18 @@ ROS_CAMERA_KEEPALIVE_SEC = float(os.getenv("ROS_CAMERA_KEEPALIVE_SEC", "1.0"))
 
 # If True and using /compressed topics, forward bytes as-is (no decode/resize).
 # This minimizes CPU and prevents queue buildup from expensive re-encoding.
-ROS_CAMERA_PASSTHROUGH = os.getenv("ROS_CAMERA_PASSTHROUGH", "1") == "1"
+# Set to 0 when you want to downscale here for lower bandwidth.
+ROS_CAMERA_PASSTHROUGH = os.getenv("ROS_CAMERA_PASSTHROUGH", "0") == "1"
+
+# Downscale size when passthrough is off. Format: "WIDTHxHEIGHT".
+# Example: 320x180
+_downscale_env = os.getenv("ROS_CAMERA_DOWNSCALE", "320x180")
+_downscale_size = None
+try:
+    _w, _h = _downscale_env.lower().split("x", 1)
+    _downscale_size = (int(_w), int(_h))
+except Exception:
+    _downscale_size = None
 
 
 class processRosCamera(WorkerProcess):
@@ -66,7 +77,7 @@ class processRosCamera(WorkerProcess):
             min_frame_interval=min_frame_interval,
             init_retry_sec=1.0,
             passthrough_compressed=ROS_CAMERA_PASSTHROUGH,
-            downscale_size=None if ROS_CAMERA_PASSTHROUGH else (320, 180),
+            downscale_size=None if ROS_CAMERA_PASSTHROUGH else _downscale_size,
             jpeg_quality=60,
         )
         self.threads.append(cam_thread)
