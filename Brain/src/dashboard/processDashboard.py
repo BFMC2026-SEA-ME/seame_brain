@@ -101,8 +101,9 @@ class processDashboard(WorkerProcess):
         self.logger = logging
         self.debugging = debugging
         
-        # ip replacement
-        IpManager.replace_ip_in_file()
+        # ip replacement (opt-in to avoid dev-server rebuilds and disconnects)
+        if os.environ.get("DASHBOARD_AUTO_IP") == "1":
+            IpManager.replace_ip_in_file()
 
         # state machine
         self.stateMachine = StateMachine.get_instance()
