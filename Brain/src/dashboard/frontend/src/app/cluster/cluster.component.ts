@@ -158,7 +158,6 @@ export class ClusterComponent {
       this.serialConnectionStateSubscription.unsubscribe();
     }
 
-    this.webSocketService.disconnectSocket();
     this.clusterService.updateKL('0');
   }
   

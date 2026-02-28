@@ -124,9 +124,9 @@ class processDashboard(WorkerProcess):
         self.heartbeat_retries = 0
         # Heartbeat is used to detect stale sessions. Keep these values forgiving
         # to tolerate background tabs / CPU spikes.
-        self.heartbeat_max_retries = 6
+        self.heartbeat_max_retries = 12
         self.heartbeat_time_between_heartbeats = 60 # seconds
-        self.heartbeat_time_between_retries = 10 # seconds
+        self.heartbeat_time_between_retries = 15 # seconds
         self.heartbeat_received = False
 
         # session management
@@ -141,7 +141,13 @@ class processDashboard(WorkerProcess):
 
         # setup flask and socketio
         self.app = Flask(__name__)
-        self.socketio = SocketIO(self.app, cors_allowed_origins="*", async_mode='eventlet')
+        self.socketio = SocketIO(
+            self.app,
+            cors_allowed_origins="*",
+            async_mode='eventlet',
+            ping_interval=25,
+            ping_timeout=60,
+        )
         CORS(self.app, supports_credentials=True)
 
         # calibration
@@ -246,6 +252,11 @@ class processDashboard(WorkerProcess):
             elif self.sessionActive and self.activeUser != socketId:
                 print(f"\033[1;97m[ Dashboard ] :\033[0m \033[1;93mWARNING\033[0m - Message received from unauthorized user \033[94m{socketId}\033[0m")
                 return
+            elif self.sessionActive and self.activeUser == socketId:
+                # Any valid message from active user implies the connection is alive.
+                self.heartbeat_retries = 0
+                self.heartbeat_last_sent = time.time()
+                self.heartbeat_received = True
 
             if dataName == "Heartbeat":
                 self.handle_heartbeat()
@@ -260,7 +271,10 @@ class processDashboard(WorkerProcess):
             else:
                 self.send_message_to_brain(dataName, dataDict)
 
-            self.socketio.emit('response', {'data': 'Message received: ' + str(data)}, room=socketId) # type: ignore
+            try:
+                self.socketio.emit('response', {'data': 'Message received: ' + str(data)}, room=socketId) # type: ignore
+            except Exception as exc:
+                self.logger.error(f"Failed to emit response: {exc}")
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse JSON message: {e}")
             self.socketio.emit('response', {'error': 'Invalid JSON format'}, room=socketId) # type: ignore
@@ -298,6 +312,22 @@ class processDashboard(WorkerProcess):
         """Handle getting the current serial connection state."""
         self.socketio.emit('current_serial_connection_state', {'data': self.serialConnected}, room=socketId)
 
+    def _trigger_safety_stop(self, reason: str = "disconnect"):
+        """Force a safe stop on the vehicle when control link is lost."""
+        try:
+            self.send_message_to_brain("EmergencyStop", {"Value": True})
+            self.send_message_to_brain("SpeedMotor", {"Value": "0"})
+            self.send_message_to_brain("SteerMotor", {"Value": "0"})
+            self.send_message_to_brain("Brake", {"Value": "0"})
+            print(
+                f"\033[1;97m[ Dashboard ] :\033[0m "
+                f"\033[1;93mWARNING\033[0m - Safety stop triggered due to {reason}"
+            )
+        except Exception as exc:
+            print(
+                f"\033[1;97m[ Dashboard ] :\033[0m "
+                f"\033[1;91mERROR\033[0m - Safety stop failed: {exc}"
+            )
 
     def handle_single_user_session(self, socketId):
         """Handle session access for a single user."""
@@ -326,6 +356,7 @@ class processDashboard(WorkerProcess):
         """Handle client disconnect to release session ownership."""
         socketId = request.sid
         if self.sessionActive and self.activeUser == socketId:
+            self._trigger_safety_stop("socket disconnect")
             self.sessionActive = False
             self.activeUser = None
 
@@ -385,14 +416,18 @@ class processDashboard(WorkerProcess):
 
         if not self.heartbeat_received and self.sessionActive:
             self.heartbeat_retries += 1
-            if self.heartbeat_retries < self.heartbeat_max_retries:
-                self.socketio.emit('heartbeat', {'data': 'Heartbeat'})
-            else:
-                print(f"\033[1;97m[ Dashboard ] :\033[0m \033[1;93mWARNING\033[0m - Connection lost with peer \033[94m{self.activeUser}\033[0m")
-                self.socketio.emit('heartbeat_disconnect', {'data': 'Heartbeat timeout'})
-                self.sessionActive = False
-                self.activeUser = None
-                self.heartbeat_retries = 0
+            try:
+                if self.heartbeat_retries < self.heartbeat_max_retries:
+                    self.socketio.emit('heartbeat', {'data': 'Heartbeat'})
+                else:
+                    print(f"\033[1;97m[ Dashboard ] :\033[0m \033[1;93mWARNING\033[0m - Connection lost with peer \033[94m{self.activeUser}\033[0m")
+                    self._trigger_safety_stop("heartbeat timeout")
+                    self.socketio.emit('heartbeat_disconnect', {'data': 'Heartbeat timeout'})
+                    self.sessionActive = False
+                    self.activeUser = None
+                    self.heartbeat_retries = 0
+            except Exception as exc:
+                self.logger.error(f"Heartbeat emit failed: {exc}")
 
             eventlet.spawn_after(self.heartbeat_time_between_retries, self.send_heartbeat)
         else:
@@ -405,21 +440,24 @@ class processDashboard(WorkerProcess):
         if not self.running:
             return
 
-        for msg, subscriber in self.messages.items():
-            resp = subscriber["obj"].receive()
-            if resp is not None:
-                if msg == "SerialConnectionState":
-                    self.serialConnected = resp
-                if msg == "serialCamera":
-                    # 바이너리 이미지 전송 (socket.IO로 전송)
-                    try:
-                        self.socketio.emit(msg, resp, binary=True)
-                    except Exception:
+        try:
+            for msg, subscriber in self.messages.items():
+                resp = subscriber["obj"].receive()
+                if resp is not None:
+                    if msg == "SerialConnectionState":
+                        self.serialConnected = resp
+                    if msg == "serialCamera":
+                        # 바이너리 이미지 전송 (socket.IO로 전송)
+                        try:
+                            self.socketio.emit(msg, resp, binary=True)
+                        except Exception:
+                            self.socketio.emit(msg, {"value": resp})
+                    else:
                         self.socketio.emit(msg, {"value": resp})
-                else:
-                    self.socketio.emit(msg, {"value": resp})
-                if self.debugging:
-                    self.logger.info(f"{msg}: {resp}")
+                    if self.debugging:
+                        self.logger.info(f"{msg}: {resp}")
+        except Exception as exc:
+            self.logger.error(f"send_continuous_messages failed: {exc}")
 
         eventlet.spawn_after(0.1, self.send_continuous_messages)
 
@@ -428,13 +466,15 @@ class processDashboard(WorkerProcess):
         """Send hardware monitoring data to the frontend."""
         if not self.running:
             return
+        try:
+            self.socketio.emit('memory_channel', {'data': self.memoryUsage})
+            self.socketio.emit('cpu_channel', {
+                'data': {
+                    'usage': self.cpuCoreUsage,
+                    'temp': self.cpuTemperature
+                }
+            })
+        except Exception as exc:
+            self.logger.error(f"send_hardware_data_to_frontend failed: {exc}")
 
-        self.socketio.emit('memory_channel', {'data': self.memoryUsage})
-        self.socketio.emit('cpu_channel', {
-            'data': {
-                'usage': self.cpuCoreUsage,
-                'temp': self.cpuTemperature
-            }
-        })
-
-        eventlet.spawn_after(1.0, self.send_hardware_data_to_frontend)
+        eventlet.spawn_after(3.0, self.send_hardware_data_to_frontend)

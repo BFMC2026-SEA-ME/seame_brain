@@ -76,7 +76,6 @@ export class SideMarkerComponent {
     if (this.steerSubscription) {
       this.steerSubscription.unsubscribe();
     }
-    this.webSocketService.disconnectSocket();
   }
 }
 

@@ -84,7 +84,6 @@ export class SpeedometerComponent {
     if (this.speedSubscription) {
       this.speedSubscription.unsubscribe();
     }
-    this.webSocketService.disconnectSocket();
   }
 
   updateNeedle(): void {

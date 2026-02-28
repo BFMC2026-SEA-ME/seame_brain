@@ -98,7 +98,6 @@ export class LiveCameraComponent {
     if (this.loadingTimeout) {
       clearTimeout(this.loadingTimeout);
     }
-    this.webSocketService.disconnectSocket();
   }
 
   createBlackImage(): string {

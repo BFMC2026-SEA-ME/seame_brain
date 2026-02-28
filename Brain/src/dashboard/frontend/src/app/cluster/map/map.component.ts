@@ -101,7 +101,6 @@ export class MapComponent {
     if (this.semaphoresAndCarsSubscription) {
       this.semaphoresAndCarsSubscription.unsubscribe();
     }
-    this.webSocketService.disconnectSocket();
   }
 
   onLoadTrack(image: HTMLImageElement): void {

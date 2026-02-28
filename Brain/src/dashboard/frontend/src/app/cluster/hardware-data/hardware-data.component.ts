@@ -138,7 +138,6 @@ export class HardwareDataComponent {
     if (this.watchdogInterval) {
       clearInterval(this.watchdogInterval);
     }
-    this.webSocketService.disconnectSocket();
   }
 
   resetHardwareData(): void {
