@@ -26,6 +26,9 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 
+from queue import Full
+
+
 class messageHandlerSender:
     """Class which will handle sender functionalities.\n
     Args:
@@ -33,9 +36,10 @@ class messageHandlerSender:
         message (enum): A specific message
     """
         
-    def __init__(self, queuesList, message):
+    def __init__(self, queuesList, message, drop_old: bool = False):
         self.queuesList = queuesList
         self.message = message
+        self.drop_old = drop_old
 
     def send(self, value):
         """
@@ -44,11 +48,27 @@ class messageHandlerSender:
         Args:
             value (any type): The value to be put into the queue. This can be of any type
         """
-        self.queuesList[self.message.Queue.value].put(
-            {
-                "Owner": self.message.Owner.value,
-                "msgID": self.message.msgID.value,
-                "msgType": self.message.msgType.value,
-                "msgValue": value
-            }
-        )
+        payload = {
+            "Owner": self.message.Owner.value,
+            "msgID": self.message.msgID.value,
+            "msgType": self.message.msgType.value,
+            "msgValue": value,
+        }
+
+        queue_ref = self.queuesList[self.message.Queue.value]
+        if not self.drop_old:
+            queue_ref.put(payload)
+            return
+
+        try:
+            queue_ref.put_nowait(payload)
+        except Full:
+            # Drop oldest and retry once to keep only the latest item.
+            try:
+                queue_ref.get_nowait()
+            except Exception:
+                pass
+            try:
+                queue_ref.put_nowait(payload)
+            except Full:
+                pass

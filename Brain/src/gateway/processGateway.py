@@ -71,7 +71,7 @@ if __name__ == "__main__":
         "Warning": Queue(),
         "General": Queue(),
         "Config": Queue(),
-        "Image": Queue(),
+        "Image": Queue(maxsize=1),
     }
     logging = logging.getLogger()
     process = processGateway(queueList, logging, debugging=True)

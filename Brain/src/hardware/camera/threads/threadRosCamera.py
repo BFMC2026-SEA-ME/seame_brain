@@ -56,7 +56,7 @@ class RosCameraThread(ThreadWithStop):
         self.jpeg_quality = jpeg_quality
         self.passthrough_compressed = passthrough_compressed
 
-        self.serialCameraSender = messageHandlerSender(self.queuesList, serialCamera)
+        self.serialCameraSender = messageHandlerSender(self.queuesList, serialCamera, drop_old=True)
         self.stateChangeSubscriber = messageHandlerSubscriber(
             self.queuesList, StateChange, "lastOnly", True
         )

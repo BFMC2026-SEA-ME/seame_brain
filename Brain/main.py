@@ -135,7 +135,7 @@ queueList = {
     "Warning": Queue(),
     "General": Queue(),
     "Config": Queue(),
-    "Image": Queue(),
+    "Image": Queue(maxsize=1),
 }
 logging = logging.getLogger()
 

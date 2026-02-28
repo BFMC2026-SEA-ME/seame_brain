@@ -101,7 +101,7 @@ if __name__ == "__main__":
         "Warning": Queue(),
         "General": Queue(),
         "Config": Queue(),
-        "Image": Queue(),
+        "Image": Queue(maxsize=1),
     }
 
     logger = logging.getLogger()

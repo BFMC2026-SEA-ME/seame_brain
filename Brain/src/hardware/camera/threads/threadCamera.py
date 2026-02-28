@@ -68,7 +68,7 @@ class threadCamera(ThreadWithStop):
 
         self.recordingSender = messageHandlerSender(self.queuesList, Recording)
         self.mainCameraSender = messageHandlerSender(self.queuesList, mainCamera)
-        self.serialCameraSender = messageHandlerSender(self.queuesList, serialCamera)
+        self.serialCameraSender = messageHandlerSender(self.queuesList, serialCamera, drop_old=True)
 
         self.subscribe()
         self._init_camera()
