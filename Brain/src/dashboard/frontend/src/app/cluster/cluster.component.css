@@ -46,12 +46,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     display: flex;
     position: absolute;
     flex-direction: row;
-    top: 30%;
+    top: 33%;
     left: 5%;
     width: 90%;
-    height: 40%;
+    height: 32%;
     justify-content: center;
-    gap: 25%;
+    gap: 28%;
 }
 
 .cluster-instruments-secondary {

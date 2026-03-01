@@ -53,13 +53,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 }
 
 .battery-level-text { 
-    font-size: 25px;
+    font-size: 20px;
     text-anchor: middle;
     fill: white;
 }
 
 .battery-level-unit-text { 
-    font-size: 15px;
+    font-size: 12px;
     opacity: 0.5;
     text-anchor: middle;
     fill: white;
