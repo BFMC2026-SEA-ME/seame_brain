@@ -72,6 +72,7 @@ export class MapComponent {
     maxX: 732,
     maxY: 564
   };
+  private readonly mapFitPaddingRatio = 0.04;
 
   private screenSize = {"width": 100, "height": 100}; // screen size in %
   private mapSize: number = 50; // map size in % for width
@@ -261,17 +262,25 @@ export class MapComponent {
   private graphToSvg(x: number, y: number): { x: number; y: number } {
     const imageSpanX = this.mapImageBounds.maxX - this.mapImageBounds.minX;
     const imageSpanY = this.mapImageBounds.maxY - this.mapImageBounds.minY;
+    const padX = imageSpanX * this.mapFitPaddingRatio;
+    const padY = imageSpanY * this.mapFitPaddingRatio;
+    const minX = this.mapImageBounds.minX + padX;
+    const maxX = this.mapImageBounds.maxX - padX;
+    const minY = this.mapImageBounds.minY + padY;
+    const maxY = this.mapImageBounds.maxY - padY;
+    const fitSpanX = Math.max(0.0001, maxX - minX);
+    const fitSpanY = Math.max(0.0001, maxY - minY);
     if (!this.graphBounds) {
       return {
-        x: this.mapImageBounds.minX + (x / 20.67) * imageSpanX,
-        y: this.mapImageBounds.minY + (1 - (y / 13.76)) * imageSpanY
+        x: minX + (x / 20.67) * fitSpanX,
+        y: minY + (1 - (y / 13.76)) * fitSpanY
       };
     }
     const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
     const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
     return {
-      x: this.mapImageBounds.minX + ((x - this.graphBounds.min_x) / spanX) * imageSpanX,
-      y: this.mapImageBounds.minY + (1 - ((y - this.graphBounds.min_y) / spanY)) * imageSpanY
+      x: minX + ((x - this.graphBounds.min_x) / spanX) * fitSpanX,
+      y: minY + (1 - ((y - this.graphBounds.min_y) / spanY)) * fitSpanY
     };
   }
 }
