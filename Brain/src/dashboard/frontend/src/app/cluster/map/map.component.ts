@@ -44,8 +44,8 @@ interface MapNode {
   id: string;
   x: number;
   y: number;
-  xPct: number;
-  yPct: number;
+  xSvg: number;
+  ySvg: number;
 }
 
 @Component({
@@ -65,6 +65,8 @@ export class MapComponent {
   private mapX: number = 0;
   private mapY: number = 0;
   private enableMapPan: boolean = false;
+  private readonly mapImageWidth = 772;
+  private readonly mapImageHeight = 600;
 
   private screenSize = {"width": 100, "height": 100}; // screen size in %
   private mapSize: number = 50; // map size in % for width
@@ -128,13 +130,13 @@ export class MapComponent {
         }
 
         this.graphNodes = (payload.nodes as any[]).map((node) => {
-          const pct = this.graphToPercent(node.x, node.y);
+          const svg = this.graphToSvg(node.x, node.y);
           return {
             id: String(node.id),
             x: Number(node.x),
             y: Number(node.y),
-            xPct: pct.x,
-            yPct: pct.y
+            xSvg: svg.x,
+            ySvg: svg.y
           };
         });
         if (!this.hasLocation && this.graphBounds) {
@@ -157,8 +159,8 @@ export class MapComponent {
           return;
         }
         this.pathPoints = points.map((pt) => {
-          const pct = this.graphToPercent(pt.x, pt.y);
-          return `${pct.x},${pct.y}`;
+          const svg = this.graphToSvg(pt.x, pt.y);
+          return `${svg.x},${svg.y}`;
         }).join(' ');
       },
     );
@@ -301,6 +303,21 @@ export class MapComponent {
     return {
       x: ((x - this.graphBounds.min_x) * 100) / spanX,
       y: 100 - ((y - this.graphBounds.min_y) * 100) / spanY
+    };
+  }
+
+  private graphToSvg(x: number, y: number): { x: number; y: number } {
+    if (!this.graphBounds) {
+      return {
+        x: (x / 20.67) * this.mapImageWidth,
+        y: this.mapImageHeight - (y / 13.76) * this.mapImageHeight
+      };
+    }
+    const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
+    const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
+    return {
+      x: ((x - this.graphBounds.min_x) / spanX) * this.mapImageWidth,
+      y: this.mapImageHeight - ((y - this.graphBounds.min_y) / spanY) * this.mapImageHeight
     };
   }
 }
