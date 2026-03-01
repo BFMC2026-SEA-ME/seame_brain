@@ -31,7 +31,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
     <div #imageContainer id="map-track-image-container">
       <svg #overlayElement id="map-track-overlay" viewBox="28 18 704 546" preserveAspectRatio="xMidYMid meet">
         <image href="/assets/lab_track.png" x="0" y="0" width="772" height="600" class="map-image" />
-        <rect class="map-frame" x="28.5" y="18.5" width="703" height="545"></rect>
         <polyline *ngIf="pathPoints" class="map-path" [attr.points]="pathPoints"></polyline>
         <g *ngFor="let node of graphNodes">
           <circle
@@ -39,7 +38,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
             [class.selected]="node.id === selectedNodeId"
             [attr.cx]="node.xSvg"
             [attr.cy]="node.ySvg"
-            r="4"
+            r="3.2"
             (click)="onSelectNode(node.id)"
           ></circle>
         </g>
