@@ -102,6 +102,7 @@ class threadRead(ThreadWithStop):
         self.last_error_time = None
         self.error_cooldown = timedelta(seconds=3)
 
+        self._queue_timer = None
         self.queue_sending()
 
     def _init_ros_state(self):
@@ -662,8 +663,12 @@ class threadRead(ThreadWithStop):
 
     # ==================================== SENDING =======================================
     def queue_sending(self):
+        if self._blocker.is_set():
+            return
         self.enableButtonSender.send(True)
-        threading.Timer(1, self.queue_sending).start()
+        self._queue_timer = threading.Timer(1, self.queue_sending)
+        self._queue_timer.daemon = True
+        self._queue_timer.start()
 
     def send_queue(self, buff):
         if '@' in buff and ':' in buff:
@@ -831,5 +836,11 @@ class threadRead(ThreadWithStop):
 
     def stop(self):
         self._ros_shutdown_requested = True
+        if self._queue_timer is not None:
+            try:
+                self._queue_timer.cancel()
+            except Exception:
+                pass
+            self._queue_timer = None
         super(threadRead, self).stop()
         self._shutdown_ros()

@@ -71,6 +71,8 @@ class processSerialHandler(WorkerProcess):
         self.serialDevice = None
         self.serialLock = Lock()
         self.reconnecting = False
+        self._shutdown_event = threading.Event()
+        self._reconnect_timer = None
 
         self._init_subscribers()
         self._init_senders()
@@ -118,6 +120,8 @@ class processSerialHandler(WorkerProcess):
 
     def _try_reconnect(self):
         """Try to reconnect to serial device (called by timer)."""
+        if self._shutdown_event.is_set():
+            return
         if self.reconnecting:
             return # another reconnection attempt is already in progress
 
@@ -134,7 +138,10 @@ class processSerialHandler(WorkerProcess):
         else:
             # schedule next attempt
             self.reconnecting = False
-            threading.Timer(1, self._try_reconnect).start()
+            if not self._shutdown_event.is_set():
+                self._reconnect_timer = threading.Timer(1, self._try_reconnect)
+                self._reconnect_timer.daemon = True
+                self._reconnect_timer.start()
 
     def _reset_thread_error_states(self):
         """Reset error states in threads after successful reconnection."""
@@ -145,8 +152,11 @@ class processSerialHandler(WorkerProcess):
 
     def _wait_for_dashboard_and_notify(self):
         """Wait for dashboard to be ready, then notify connected state once without blocking init."""
-        self.dashboard_ready.wait()
-        if self.dashboard_ready.is_set():
+        while not self.dashboard_ready.is_set():
+            if self._shutdown_event.is_set():
+                return
+            self.dashboard_ready.wait(0.2)
+        if self.dashboard_ready.is_set() and not self._shutdown_event.is_set():
             self.serialConnectedSender.send(self.serialConnected)
 
 
@@ -155,7 +165,7 @@ class processSerialHandler(WorkerProcess):
 
         with self.serialLock:
             # check if already handling disconnection
-            if self.reconnecting or not self.serialConnected:
+            if self._shutdown_event.is_set() or self.reconnecting or not self.serialConnected:
                 return
 
             print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m - Serial device disconnected")
@@ -171,7 +181,10 @@ class processSerialHandler(WorkerProcess):
             if self.threads:
                 self.pause_threads()
 
-            threading.Timer(1, self._try_reconnect).start()
+            if not self._shutdown_event.is_set():
+                self._reconnect_timer = threading.Timer(1, self._try_reconnect)
+                self._reconnect_timer.daemon = True
+                self._reconnect_timer.start()
 
     # ===================================== RUN ==========================================
     def run(self):
@@ -220,6 +233,13 @@ class processSerialHandler(WorkerProcess):
     # ===================================== STOP ==========================================
     def stop(self):
         """Close the history file and stop the process."""
+        self._shutdown_event.set()
+        if self._reconnect_timer is not None:
+            try:
+                self._reconnect_timer.cancel()
+            except Exception:
+                pass
+            self._reconnect_timer = None
         # close serial connection
         with self.serialLock:
             if self.serialCon:

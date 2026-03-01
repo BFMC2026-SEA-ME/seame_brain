@@ -121,6 +121,10 @@ def manage_process_life(process_class, process_instance, process_args, enabled, 
             process_instance.start()
     else:
         if process_instance is not None and process_instance.is_alive():
+            try:
+                process_instance.stop()
+            except Exception:
+                pass
             shutdown_process(process_instance)
             allProcesses.remove(process_instance)
             process_instance = None

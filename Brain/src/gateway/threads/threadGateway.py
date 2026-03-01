@@ -28,6 +28,7 @@
 
 from src.templates.threadwithstop import ThreadWithStop
 import time
+from queue import Empty
 
 class threadGateway(ThreadWithStop):
     """Thread which will handle processGateway functionalities.\n
@@ -135,17 +136,28 @@ class threadGateway(ThreadWithStop):
         message = None
         # We are using "elif" because we are processing one message at a time.
         # We work with the queues in the priority order( We start from the high priority to low priority)
-        if not self.queuesList["Critical"].empty():
-            message = self.queuesList["Critical"].get()
-        elif not self.queuesList["Warning"].empty():
-            message = self.queuesList["Warning"].get()
-        elif not self.queuesList["General"].empty():
-            message = self.queuesList["General"].get()
-        elif "Image" in self.queuesList and not self.queuesList["Image"].empty():
+        try:
+            message = self.queuesList["Critical"].get_nowait()
+        except Empty:
+            message = None
+        if message is None:
+            try:
+                message = self.queuesList["Warning"].get_nowait()
+            except Empty:
+                message = None
+        if message is None:
+            try:
+                message = self.queuesList["General"].get_nowait()
+            except Empty:
+                message = None
+        if message is None and "Image" in self.queuesList:
             # 이미지는 최신 1개만 전송하고 나머지는 드롭해 적체 방지
             latest = None
-            while not self.queuesList["Image"].empty():
-                latest = self.queuesList["Image"].get()
+            while True:
+                try:
+                    latest = self.queuesList["Image"].get_nowait()
+                except Empty:
+                    break
             message = latest
         if message is not None:
             self.send(message)
