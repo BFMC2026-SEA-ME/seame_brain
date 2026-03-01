@@ -99,7 +99,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 .cluster-map { 
     position: absolute;
     top: 5%;
-    left: 65%;
+    left: 70%;
     width: 75%;
     height: 50%;
     transform: translateX(-50%);
