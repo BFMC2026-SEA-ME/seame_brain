@@ -101,7 +101,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     top: 5%;
     left: 65%;
     width: 75%;
-    height: auto;
+    height: 50%;
     transform: translateX(-50%);
 }
 
