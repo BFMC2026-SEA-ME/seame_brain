@@ -39,7 +39,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     display: flex;
     position: relative;
     justify-content: center;
-    align-items: flex-start;
+    align-items: center;
     width: 100%;
     height: 100%;
     overflow: hidden;
@@ -51,7 +51,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     width: 100%;
     height: 100%;
     justify-content: center;
-    align-items: flex-start;
+    align-items: center;
 }
 
 #map-track-image {
@@ -59,7 +59,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     width: 100%;
     height: 100%;
     object-fit: contain;
-    object-position: center top;
+    object-position: center center;
 }
 
 #map-track-overlay {
