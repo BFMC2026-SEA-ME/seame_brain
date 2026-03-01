@@ -46,7 +46,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     display: flex;
     position: absolute;
     flex-direction: row;
-    top: 33%;
+    top: 40%;
     left: 5%;
     width: 90%;
     height: 32%;
@@ -144,7 +144,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 .cluster-steering { 
     position: absolute;
-    bottom: 16%;
+    bottom: 19%;
     left: 43%;
     width: 14%;
     height: 3%;
