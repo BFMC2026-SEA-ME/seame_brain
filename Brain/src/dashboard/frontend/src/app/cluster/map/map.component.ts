@@ -58,7 +58,6 @@ interface MapNode {
 export class MapComponent {
   @Input() cursorRotation: number = 0;
 
-  @ViewChild('imageElement') imageElementRef!: ElementRef<HTMLImageElement>;
   @ViewChild('imageContainer') imageContainerRef!: ElementRef<HTMLImageElement>;
   @ViewChild('overlayElement') overlayElementRef!: ElementRef<SVGElement>;
 
@@ -67,6 +66,12 @@ export class MapComponent {
   private enableMapPan: boolean = false;
   private readonly mapImageWidth = 772;
   private readonly mapImageHeight = 600;
+  private readonly mapImageBounds = {
+    minX: 28,
+    minY: 18,
+    maxX: 732,
+    maxY: 564
+  };
 
   private screenSize = {"width": 100, "height": 100}; // screen size in %
   private mapSize: number = 50; // map size in % for width
@@ -183,27 +188,6 @@ export class MapComponent {
     }
   }
 
-  onLoadTrack(image: HTMLImageElement): void {
-    const imageContainer = document.getElementById("map-track-image-container") as HTMLElement;
-
-    if (imageContainer) {
-      imageContainer.style.width = `${this.screenSize["width"]}%`;
-      imageContainer.style.height = `${this.screenSize["height"]}%`;  
-    }
-
-    this.mapWidth = image.width;
-    this.mapHeight = image.height;
-
-    const map = document.getElementById("map-track-image") as HTMLElement;
-
-    if (map) {
-      map.style.width = `${this.mapSize}%`;
-      map.style.height = `auto`;
-
-      this.mapWidth = this.mapSize;
-    }
-  }
-
   onLoadCursor(): void {
     const cursor = document.getElementById("map-cursor") as HTMLElement;
 
@@ -226,61 +210,29 @@ export class MapComponent {
   }
 
   updateMap(): void {
-    const map = document.getElementById("map-track-image") as HTMLElement;
-    const overlay = document.getElementById("map-track-overlay") as HTMLElement;
-    let imageContainerHeight: number = 0;
-
-    if (map) {
-      if (this.imageContainerRef) {
-        const imgContainer = this.imageContainerRef.nativeElement;
-        const rect = imgContainer.getBoundingClientRect();
-        imageContainerHeight = rect.height;
-      }
-
-      if (this.imageElementRef) {
-        const image = this.imageElementRef.nativeElement;
-        this.mapWidth = this.mapSize;
-        this.mapHeight = (100 * image.height) / imageContainerHeight;
-      }
-
-      const top = (this.mapY * this.mapHeight) / 100 - this.mapHeight - (this.screenSize["height"] / 2 - this.mapHeight);
-      const left = (this.mapX * this.mapWidth) / 100 - this.mapWidth - (this.screenSize["width"] / 2 - this.mapWidth);
-
-      if (!this.hasLocation) {
-        map.style.top = `0%`;
-        map.style.left = `0%`;
-        if (overlay) {
-          overlay.style.top = `0%`;
-          overlay.style.left = `0%`;
-          overlay.style.width = `100%`;
-          overlay.style.height = `100%`;
-        }
-      } else {
-        map.style.top = `${-top}%`;
-        map.style.left = `${-left}%`;
-        if (overlay) {
-          overlay.style.top = `${-top}%`;
-          overlay.style.left = `${-left}%`;
-          overlay.style.width = `${this.mapSize}%`;
-          overlay.style.height = `${this.mapHeight}%`;
-        }
-      }
-
-      this.semaphores.forEach((value: Semaphore, key: number) => {
-        const semaphore = document.getElementById("map-semaphore" + key) as HTMLElement;
-
-        if (semaphore) { 
-          const x = (value.x * 100/20.67);
-          const y = (value.y * 100/13.76);
-
-          const top_new = (y * this.mapHeight) / 100;
-          const left_new = (x * this.mapWidth) / 100;
-          
-          semaphore.style.top = `${(-top - this.semaphoreXOffset) + top_new}%`;
-          semaphore.style.left = `${(-left - this.semaphoreYOffset) + left_new}%`;
-        }
-      });
+    const overlay = this.overlayElementRef?.nativeElement ?? null;
+    if (!overlay) {
+      return;
     }
+
+    if (!this.enableMapPan || !this.hasLocation) {
+      overlay.style.top = `0%`;
+      overlay.style.left = `0%`;
+      overlay.style.width = `100%`;
+      overlay.style.height = `100%`;
+      return;
+    }
+
+    this.mapWidth = this.mapSize;
+    this.mapHeight = 100;
+
+    const top = (this.mapY * this.mapHeight) / 100 - this.mapHeight - (this.screenSize["height"] / 2 - this.mapHeight);
+    const left = (this.mapX * this.mapWidth) / 100 - this.mapWidth - (this.screenSize["width"] / 2 - this.mapWidth);
+
+    overlay.style.top = `${-top}%`;
+    overlay.style.left = `${-left}%`;
+    overlay.style.width = `${this.mapSize}%`;
+    overlay.style.height = `${this.mapHeight}%`;
   }
 
   onSelectNode(nodeId: string): void {
@@ -307,17 +259,19 @@ export class MapComponent {
   }
 
   private graphToSvg(x: number, y: number): { x: number; y: number } {
+    const imageSpanX = this.mapImageBounds.maxX - this.mapImageBounds.minX;
+    const imageSpanY = this.mapImageBounds.maxY - this.mapImageBounds.minY;
     if (!this.graphBounds) {
       return {
-        x: (x / 20.67) * this.mapImageWidth,
-        y: this.mapImageHeight - (y / 13.76) * this.mapImageHeight
+        x: this.mapImageBounds.minX + (x / 20.67) * imageSpanX,
+        y: this.mapImageBounds.minY + (1 - (y / 13.76)) * imageSpanY
       };
     }
     const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
     const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
     return {
-      x: ((x - this.graphBounds.min_x) / spanX) * this.mapImageWidth,
-      y: this.mapImageHeight - ((y - this.graphBounds.min_y) / spanY) * this.mapImageHeight
+      x: this.mapImageBounds.minX + ((x - this.graphBounds.min_x) / spanX) * imageSpanX,
+      y: this.mapImageBounds.minY + (1 - ((y - this.graphBounds.min_y) / spanY)) * imageSpanY
     };
   }
 }

@@ -29,8 +29,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
 <div class="map-container">
   <div class="map-track-container">
     <div #imageContainer id="map-track-image-container">
-      <img src="/assets/lab_track.png" id="map-track-image" #imageElement (load)="onLoadTrack(imageElement)" alt="BFMC Track" />
       <svg #overlayElement id="map-track-overlay" viewBox="0 0 772 600" preserveAspectRatio="xMidYMid meet">
+        <image href="/assets/lab_track.png" x="0" y="0" width="772" height="600" class="map-image" />
         <polyline *ngIf="pathPoints" class="map-path" [attr.points]="pathPoints"></polyline>
         <g *ngFor="let node of graphNodes">
           <circle

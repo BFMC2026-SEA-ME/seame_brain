@@ -48,39 +48,38 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 #map-track-image-container {
     display: flex;
     position: relative;
-    height: 100%;
-    width: auto;
+    width: 100%;
+    height: auto;
     max-width: 100%;
+    max-height: 100%;
     justify-content: center;
     align-items: center;
     aspect-ratio: 772 / 600;
     overflow: hidden;
 }
 
-#map-track-image {
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    object-position: center center;
-    border: 2px solid rgba(255, 255, 255, 0.6);
-    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55) inset, 0 8px 24px rgba(0, 0, 0, 0.4);
-    border-radius: 6px;
-    pointer-events: none;
-}
-
 #map-track-overlay {
     position: absolute;
+    top: 0;
+    left: 0;
     z-index: 2;
     pointer-events: auto;
     width: 100%;
     height: 100%;
+    border: 2px solid rgba(255, 255, 255, 0.6);
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55) inset, 0 8px 24px rgba(0, 0, 0, 0.4);
+    border-radius: 6px;
+}
+
+.map-image {
+    pointer-events: none;
 }
 
 .map-path {
     fill: none;
     stroke: rgba(0, 210, 200, 0.9);
     stroke-width: 0.35;
+    pointer-events: none;
 }
 
 .map-node {
@@ -88,6 +87,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     stroke: rgba(0, 0, 0, 0.6);
     stroke-width: 0.2;
     cursor: pointer;
+    pointer-events: all;
 }
 
 .map-node.selected {
