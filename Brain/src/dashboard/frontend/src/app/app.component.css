@@ -27,13 +27,13 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 .main-container { 
-  width: 100%;
-  height: 100%;
+  width: 100vw;
+  height: 100vh;
 }
 
 .cluster-container { 
-  width: var(--cluster-width);
-  height: calc(var(--cluster-width) / var(--aspect-ratio));
+  width: 100vw;
+  height: 100vh;
   display: flex;
   position: relative;
   justify-content: center;
