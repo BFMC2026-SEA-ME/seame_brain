@@ -2,7 +2,7 @@
 
 :root {
     --aspect-ratio: 1.777777777777778;
-    --cluster-width: 100vw;
+    --cluster-width: 95vw;
 }
 
 * {
@@ -20,12 +20,14 @@ body {
     color: #f0e5fe;
     margin: 0;
     padding: 0;
-    display: block;
+    display: flex;
+    justify-content: center;
+    align-items: center;
 }
 
 .app-root {
-    width: 100vw;
-    height: 100vh;
+    width: var(--cluster-width);
+    height: calc(var(--cluster-width) / var(--aspect-ratio));
 }
 
 /* 
