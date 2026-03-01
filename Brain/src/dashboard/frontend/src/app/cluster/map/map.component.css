@@ -84,8 +84,3 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 .map-node.selected {
     fill: rgba(255, 70, 70, 0.95);
 }
-
-#map-cursor { 
-    position: absolute;
-    filter: drop-shadow(0 0 0.5vw rgba(0, 0, 0, 0.5));
-}

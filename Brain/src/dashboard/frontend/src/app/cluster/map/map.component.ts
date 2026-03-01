@@ -32,7 +32,6 @@ import { WebSocketService} from '../../webSocket/web-socket.service'
 
 import { CommonModule } from '@angular/common';
 
-import { MapCursorComponent } from './map-cursor/map-cursor.component';
 import { MapSemaphoreComponent } from './map-semaphore/map-semaphore.component';
  
 interface Semaphore { 
@@ -52,7 +51,7 @@ interface MapNode {
 @Component({
   selector: 'app-map',
   standalone: true,
-  imports: [MapCursorComponent, MapSemaphoreComponent, CommonModule],
+  imports: [MapSemaphoreComponent, CommonModule],
   templateUrl: './map.component.html',
   styleUrl: './map.component.css'
 })
@@ -76,6 +75,7 @@ export class MapComponent {
 
   private semaphoreXOffset: number = 10;
   private semaphoreYOffset: number = 1.45;
+  private hasLocation: boolean = false;
   
   public semaphores: Map<number, Semaphore> = new Map<number, Semaphore>();
   public graphNodes: MapNode[] = [];
@@ -97,6 +97,7 @@ export class MapComponent {
   {
     this.locationSubscription = this.webSocketService.receiveLocation().subscribe(
       (message) => {
+        this.hasLocation = true;
         this.mapX = (parseFloat(message.value.x)*100/20.67)
         this.mapY = (100 - parseFloat(message.value.y)*100/13.76) //magic percent + same system of coordinates
         this.updateMap()
@@ -132,6 +133,14 @@ export class MapComponent {
             yPct: pct.y
           };
         });
+        if (!this.hasLocation && this.graphBounds) {
+          const centerGraphX = (this.graphBounds.min_x + this.graphBounds.max_x) / 2;
+          const centerGraphY = (this.graphBounds.min_y + this.graphBounds.max_y) / 2;
+          const centerWorld = this.graphToWorld(centerGraphX, centerGraphY);
+          const centerPct = this.worldToPercent(centerWorld.x, centerWorld.y);
+          this.mapX = centerPct.x;
+          this.mapY = centerPct.y;
+        }
         this.updateMap();
       },
     );
