@@ -66,7 +66,7 @@ export class MapComponent {
   private mapY: number = 0;
 
   private screenSize = {"width": 100, "height": 100}; // screen size in %
-  private mapSize: number = 80; // map size in % for width
+  private mapSize: number = 50; // map size in % for width
   private mapWidth: number = 0;
   private mapHeight: number = 0;
 
