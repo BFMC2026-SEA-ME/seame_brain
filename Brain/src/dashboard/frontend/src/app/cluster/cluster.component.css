@@ -179,9 +179,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 .cluster-hardware-data { 
     position: absolute;
-    top: 82%;
-    left: 0.5%;
-    width: 30%;
+    top: 28%;
+    right: 2%;
+    left: auto;
+    width: 22%;
     height: 16%;
 }
 

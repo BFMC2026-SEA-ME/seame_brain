@@ -41,7 +41,6 @@ import { SteeringComponent } from './steering/steering.component';
 import { LiveCameraComponent } from './live-camera/live-camera.component';
 import { WarningLightComponent } from './warning-light/warning-light.component';
 import { HardwareDataComponent} from './hardware-data/hardware-data.component';
-import { TimeSpeedSteerComponent} from './time-speed-steer/time-speed-steer.component'
 import { SideMarkerComponent } from './side-marker/side-marker.component'
 import { CommonModule } from '@angular/common';
 import { ClusterService } from './cluster.service';
@@ -53,7 +52,7 @@ import { provideProtractorTestingSupport } from '@angular/platform-browser';
             CarComponent, InstantConsumptionComponent, StateSwitchComponent,
             KlSwitchComponent, SteeringComponent, LiveCameraComponent,
             WarningLightComponent, HardwareDataComponent,
-            TimeSpeedSteerComponent, SideMarkerComponent, CommonModule],
+            SideMarkerComponent, CommonModule],
   templateUrl: './cluster.component.html',
   styleUrl: './cluster.component.css'
 })
