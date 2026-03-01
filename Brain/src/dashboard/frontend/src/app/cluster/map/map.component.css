@@ -43,23 +43,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     width: 100%;
     height: 100%;
     overflow: hidden;
-    mask-image: radial-gradient(closest-side, rgba(0, 0, 0, 1) 60%, rgba(0, 0, 0, 0) 90%);
-    -webkit-mask-image: radial-gradient(closest-side, rgba(0, 0, 0, 1) 60%, rgba(0, 0, 0, 0) 90%);
-    mask-size: 100% 100%;
-    mask-repeat: no-repeat;
-    mask-position: center;
-    -webkit-mask-size: 100% 100%;
-    -webkit-mask-repeat: no-repeat;
-    -webkit-mask-position: center;
 }
 
 #map-track-image-container {
     display: flex;
     position: relative;
+    width: 100%;
+    height: 100%;
 }
 
 #map-track-image {
     position: absolute;
+    width: 100%;
+    height: auto;
 }
 
 #map-track-overlay {
