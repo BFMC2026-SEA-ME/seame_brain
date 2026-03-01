@@ -242,18 +242,27 @@ export class MapComponent {
       const top = (this.mapY * this.mapHeight) / 100 - this.mapHeight - (this.screenSize["height"] / 2 - this.mapHeight);
       const left = (this.mapX * this.mapWidth) / 100 - this.mapWidth - (this.screenSize["width"] / 2 - this.mapWidth);
 
-      map.style.top = `${-top}%`;
-      map.style.left = `${-left}%`;
-      if (overlay) {
-        overlay.style.top = `${-top}%`;
-        overlay.style.left = `${-left}%`;
-        overlay.style.width = `${this.mapSize}%`;
-        overlay.style.height = `${this.mapHeight}%`;
+      if (!this.hasLocation) {
+        map.style.top = `0%`;
+        map.style.left = `0%`;
+        if (overlay) {
+          overlay.style.top = `0%`;
+          overlay.style.left = `0%`;
+          overlay.style.width = `${this.mapSize}%`;
+          overlay.style.height = `${this.mapHeight}%`;
+        }
+      } else {
+        map.style.top = `${-top}%`;
+        map.style.left = `${-left}%`;
+        if (overlay) {
+          overlay.style.top = `${-top}%`;
+          overlay.style.left = `${-left}%`;
+          overlay.style.width = `${this.mapSize}%`;
+          overlay.style.height = `${this.mapHeight}%`;
+        }
       }
 
       this.semaphores.forEach((value: Semaphore, key: number) => {
-        console.log("???");
-        
         const semaphore = document.getElementById("map-semaphore" + key) as HTMLElement;
 
         if (semaphore) { 

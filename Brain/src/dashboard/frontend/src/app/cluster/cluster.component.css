@@ -98,10 +98,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 .cluster-map { 
     position: absolute;
-    top: 3%;
+    top: 0%;
     left: 20%;
     width: 60%;
-    height: 47%;
+    height: 35%;
 }
 
 .cluster-digital-container { 
