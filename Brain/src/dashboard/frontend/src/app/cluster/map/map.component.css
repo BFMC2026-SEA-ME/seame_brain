@@ -54,6 +54,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     justify-content: center;
     align-items: center;
     aspect-ratio: 772 / 600;
+    overflow: hidden;
 }
 
 #map-track-image {
