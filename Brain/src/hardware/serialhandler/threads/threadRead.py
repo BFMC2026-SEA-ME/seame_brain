@@ -167,8 +167,11 @@ class threadRead(ThreadWithStop):
 
         self._ros_import_warned = False
         self._ros_init_attempted = False
+        self._ros_shutdown_requested = False
 
     def _init_ros(self):
+        if self._ros_shutdown_requested:
+            return False
         if self._ros_node is not None and self._imu_pub is not None:
             return True
 
@@ -527,6 +530,8 @@ class threadRead(ThreadWithStop):
         )
 
         try:
+            if self._ros_shutdown_requested:
+                return
             self._imu_pub.publish(msg)
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU publish failed: {exc}")
@@ -556,6 +561,8 @@ class threadRead(ThreadWithStop):
             msg.vector.y = float(velocity)
             msg.vector.z = float(distance)
             try:
+                if self._ros_shutdown_requested:
+                    return
                 self._wheel_pub.publish(msg)
             except Exception as exc:
                 print(f"[SerialHandler] ROS2 wheel_encoder publish failed: {exc}")
@@ -580,6 +587,8 @@ class threadRead(ThreadWithStop):
             tmsg.twist.covariance = self._wheel_twist_cov36()
 
             try:
+                if self._ros_shutdown_requested:
+                    return
                 self._wheel_twist_pub.publish(tmsg)
             except Exception as exc:
                 print(f"[SerialHandler] ROS2 wheel_twist publish failed: {exc}")
@@ -821,5 +830,6 @@ class threadRead(ThreadWithStop):
         return False
 
     def stop(self):
-        self._shutdown_ros()
+        self._ros_shutdown_requested = True
         super(threadRead, self).stop()
+        self._shutdown_ros()
