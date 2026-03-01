@@ -64,6 +64,7 @@ export class MapComponent {
 
   private mapX: number = 0;
   private mapY: number = 0;
+  private enableMapPan: boolean = false;
 
   private screenSize = {"width": 100, "height": 100}; // screen size in %
   private mapSize: number = 50; // map size in % for width
@@ -83,8 +84,6 @@ export class MapComponent {
   public selectedNodeId: string | null = null;
 
   private graphBounds: { min_x: number; max_x: number; min_y: number; max_y: number } | null = null;
-  private readonly mapWorldWidth = 20.67;
-  private readonly mapWorldHeight = 13.76;
 
   private locationSubscription: Subscription | undefined;
   private semaphoresAndCarsSubscription: Subscription | undefined;
@@ -97,9 +96,15 @@ export class MapComponent {
   {
     this.locationSubscription = this.webSocketService.receiveLocation().subscribe(
       (message) => {
+        if (!this.enableMapPan) {
+          return;
+        }
         this.hasLocation = true;
-        this.mapX = (parseFloat(message.value.x)*100/20.67)
-        this.mapY = (100 - parseFloat(message.value.y)*100/13.76) //magic percent + same system of coordinates
+        const locX = parseFloat(message.value.x);
+        const locY = parseFloat(message.value.y);
+        const pct = this.graphToPercent(locX, locY);
+        this.mapX = pct.x;
+        this.mapY = pct.y;
         this.updateMap()
       },
     );
@@ -123,12 +128,11 @@ export class MapComponent {
         }
 
         this.graphNodes = (payload.nodes as any[]).map((node) => {
-          const world = this.graphToWorld(node.x, node.y);
-          const pct = this.worldToPercent(world.x, world.y);
+          const pct = this.graphToPercent(node.x, node.y);
           return {
             id: String(node.id),
-            x: world.x,
-            y: world.y,
+            x: Number(node.x),
+            y: Number(node.y),
             xPct: pct.x,
             yPct: pct.y
           };
@@ -136,8 +140,7 @@ export class MapComponent {
         if (!this.hasLocation && this.graphBounds) {
           const centerGraphX = (this.graphBounds.min_x + this.graphBounds.max_x) / 2;
           const centerGraphY = (this.graphBounds.min_y + this.graphBounds.max_y) / 2;
-          const centerWorld = this.graphToWorld(centerGraphX, centerGraphY);
-          const centerPct = this.worldToPercent(centerWorld.x, centerWorld.y);
+          const centerPct = this.graphToPercent(centerGraphX, centerGraphY);
           this.mapX = centerPct.x;
           this.mapY = centerPct.y;
         }
@@ -154,8 +157,7 @@ export class MapComponent {
           return;
         }
         this.pathPoints = points.map((pt) => {
-          const world = this.graphToWorld(pt.x, pt.y);
-          const pct = this.worldToPercent(world.x, world.y);
+          const pct = this.graphToPercent(pt.x, pt.y);
           return `${pct.x},${pct.y}`;
         }).join(' ');
       },
@@ -248,8 +250,8 @@ export class MapComponent {
         if (overlay) {
           overlay.style.top = `0%`;
           overlay.style.left = `0%`;
-          overlay.style.width = `${this.mapSize}%`;
-          overlay.style.height = `${this.mapHeight}%`;
+          overlay.style.width = `100%`;
+          overlay.style.height = `100%`;
         }
       } else {
         map.style.top = `${-top}%`;
@@ -286,26 +288,19 @@ export class MapComponent {
     );
   }
 
-  private graphToWorld(x: number, y: number): { x: number; y: number } {
+  private graphToPercent(x: number, y: number): { x: number; y: number } {
     if (!this.graphBounds) {
-      return { x, y };
+      return {
+        x: (x * 100) / 20.67,
+        y: 100 - (y * 100) / 13.76
+      };
     }
     const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
     const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
 
-    const scaleX = this.mapWorldWidth / spanX;
-    const scaleY = this.mapWorldHeight / spanY;
-
     return {
-      x: (x - this.graphBounds.min_x) * scaleX,
-      y: (y - this.graphBounds.min_y) * scaleY
-    };
-  }
-
-  private worldToPercent(x: number, y: number): { x: number; y: number } {
-    return {
-      x: (x * 100) / this.mapWorldWidth,
-      y: 100 - (y * 100) / this.mapWorldHeight
+      x: ((x - this.graphBounds.min_x) * 100) / spanX,
+      y: 100 - ((y - this.graphBounds.min_y) * 100) / spanY
     };
   }
 }
