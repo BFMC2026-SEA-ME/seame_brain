@@ -161,10 +161,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 .cluster-live-camera { 
     position: absolute;
-    top: 76.5%;
-    left: 75%;
+    top: 2%;
+    right: 2%;
+    left: auto;
     width: 22%;
     height: auto;
+    z-index: 6;
 }
 
 .cluster-warning-light { 
