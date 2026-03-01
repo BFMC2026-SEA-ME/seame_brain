@@ -41,6 +41,14 @@ interface Semaphore {
   state: string;
 }
 
+interface MapNode {
+  id: string;
+  x: number;
+  y: number;
+  xPct: number;
+  yPct: number;
+}
+
 @Component({
   selector: 'app-map',
   standalone: true,
@@ -53,6 +61,7 @@ export class MapComponent {
 
   @ViewChild('imageElement') imageElementRef!: ElementRef<HTMLImageElement>;
   @ViewChild('imageContainer') imageContainerRef!: ElementRef<HTMLImageElement>;
+  @ViewChild('overlayElement') overlayElementRef!: ElementRef<SVGElement>;
 
   private mapX: number = 0;
   private mapY: number = 0;
@@ -69,9 +78,18 @@ export class MapComponent {
   private semaphoreYOffset: number = 1.45;
   
   public semaphores: Map<number, Semaphore> = new Map<number, Semaphore>();
+  public graphNodes: MapNode[] = [];
+  public pathPoints: string = '';
+  public selectedNodeId: string | null = null;
+
+  private graphBounds: { min_x: number; max_x: number; min_y: number; max_y: number } | null = null;
+  private readonly mapWorldWidth = 20.67;
+  private readonly mapWorldHeight = 13.76;
 
   private locationSubscription: Subscription | undefined;
   private semaphoresAndCarsSubscription: Subscription | undefined;
+  private mapNodesSubscription: Subscription | undefined;
+  private globalPathSubscription: Subscription | undefined;
 
   constructor( private  webSocketService: WebSocketService) { }
   
@@ -91,6 +109,49 @@ export class MapComponent {
         this.semaphores.set(recv.id, {x: recv.x, y: recv.y, state: recv.state});
       },
     );
+
+    this.mapNodesSubscription = this.webSocketService.receiveMapNodes().subscribe(
+      (message) => {
+        const payload = (message as any)?.value ?? message;
+        if (!payload || !payload.nodes) {
+          return;
+        }
+
+        if (payload.bounds) {
+          this.graphBounds = payload.bounds;
+        }
+
+        this.graphNodes = (payload.nodes as any[]).map((node) => {
+          const world = this.graphToWorld(node.x, node.y);
+          const pct = this.worldToPercent(world.x, world.y);
+          return {
+            id: String(node.id),
+            x: world.x,
+            y: world.y,
+            xPct: pct.x,
+            yPct: pct.y
+          };
+        });
+        this.updateMap();
+      },
+    );
+
+    this.globalPathSubscription = this.webSocketService.receiveGlobalPath().subscribe(
+      (message) => {
+        const payload = (message as any)?.value ?? message;
+        const points = payload?.points as any[] | undefined;
+        if (!points || points.length === 0) {
+          this.pathPoints = '';
+          return;
+        }
+        this.pathPoints = points.map((pt) => {
+          const world = this.graphToWorld(pt.x, pt.y);
+          const pct = this.worldToPercent(world.x, world.y);
+          return `${pct.x},${pct.y}`;
+        }).join(' ');
+      },
+    );
+    this.webSocketService.sendMessageToFlask('{\"Name\": \"RequestMapNodes\", \"Value\": true}');
     this.updateMap()
   }
 
@@ -100,6 +161,12 @@ export class MapComponent {
     }
     if (this.semaphoresAndCarsSubscription) {
       this.semaphoresAndCarsSubscription.unsubscribe();
+    }
+    if (this.mapNodesSubscription) {
+      this.mapNodesSubscription.unsubscribe();
+    }
+    if (this.globalPathSubscription) {
+      this.globalPathSubscription.unsubscribe();
     }
   }
 
@@ -147,6 +214,7 @@ export class MapComponent {
 
   updateMap(): void {
     const map = document.getElementById("map-track-image") as HTMLElement;
+    const overlay = document.getElementById("map-track-overlay") as HTMLElement;
     let imageContainerHeight: number = 0;
 
     if (map) {
@@ -167,6 +235,12 @@ export class MapComponent {
 
       map.style.top = `${-top}%`;
       map.style.left = `${-left}%`;
+      if (overlay) {
+        overlay.style.top = `${-top}%`;
+        overlay.style.left = `${-left}%`;
+        overlay.style.width = `${this.mapSize}%`;
+        overlay.style.height = `${this.mapHeight}%`;
+      }
 
       this.semaphores.forEach((value: Semaphore, key: number) => {
         console.log("???");
@@ -185,5 +259,35 @@ export class MapComponent {
         }
       });
     }
+  }
+
+  onSelectNode(nodeId: string): void {
+    this.selectedNodeId = nodeId;
+    this.webSocketService.sendMessageToFlask(
+      `{\"Name\": \"GlobalPlanningGoalNodeId\", \"Value\": \"${nodeId}\"}`
+    );
+  }
+
+  private graphToWorld(x: number, y: number): { x: number; y: number } {
+    if (!this.graphBounds) {
+      return { x, y };
+    }
+    const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
+    const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
+
+    const scaleX = this.mapWorldWidth / spanX;
+    const scaleY = this.mapWorldHeight / spanY;
+
+    return {
+      x: (x - this.graphBounds.min_x) * scaleX,
+      y: (y - this.graphBounds.min_y) * scaleY
+    };
+  }
+
+  private worldToPercent(x: number, y: number): { x: number; y: number } {
+    return {
+      x: (x * 100) / this.mapWorldWidth,
+      y: 100 - (y * 100) / this.mapWorldHeight
+    };
   }
 }

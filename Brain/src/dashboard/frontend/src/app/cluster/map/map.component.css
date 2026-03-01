@@ -62,6 +62,29 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     position: absolute;
 }
 
+#map-track-overlay {
+    position: absolute;
+    z-index: 2;
+    pointer-events: auto;
+}
+
+.map-path {
+    fill: none;
+    stroke: rgba(0, 210, 200, 0.9);
+    stroke-width: 0.35;
+}
+
+.map-node {
+    fill: rgba(255, 182, 0, 0.9);
+    stroke: rgba(0, 0, 0, 0.6);
+    stroke-width: 0.2;
+    cursor: pointer;
+}
+
+.map-node.selected {
+    fill: rgba(255, 70, 70, 0.95);
+}
+
 #map-cursor { 
     position: absolute;
     filter: drop-shadow(0 0 0.5vw rgba(0, 0, 0, 0.5));

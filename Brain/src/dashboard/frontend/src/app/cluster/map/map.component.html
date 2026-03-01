@@ -29,7 +29,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
 <div class="map-container">
   <div class="map-track-container">
     <div #imageContainer id="map-track-image-container">
-      <img src="/assets/Track.svg" id="map-track-image" #imageElement (load)="onLoadTrack(imageElement)" alt="BFMC Track" />
+      <img src="/assets/lab_track.png" id="map-track-image" #imageElement (load)="onLoadTrack(imageElement)" alt="BFMC Track" />
+      <svg #overlayElement id="map-track-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <polyline *ngIf="pathPoints" class="map-path" [attr.points]="pathPoints"></polyline>
+        <g *ngFor="let node of graphNodes">
+          <circle
+            class="map-node"
+            [class.selected]="node.id === selectedNodeId"
+            [attr.cx]="node.xPct"
+            [attr.cy]="node.yPct"
+            r="0.7"
+            (click)="onSelectNode(node.id)"
+          ></circle>
+        </g>
+      </svg>
     </div>
 
     <div class="map-semaphores" *ngFor="let entry of semaphores | keyvalue">

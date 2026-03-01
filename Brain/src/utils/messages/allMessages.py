@@ -200,6 +200,30 @@ class EmergencyStop(Enum):
     msgID = 21
     msgType = "bool"
 
+class GlobalPlanningGoalNodeId(Enum):
+    Queue = "General"
+    Owner = "Dashboard"
+    msgID = 22
+    msgType = "str"
+
+class GlobalPath(Enum):
+    Queue = "General"
+    Owner = "GlobalPlanningBridge"
+    msgID = 23
+    msgType = "dict"
+
+class MapNodes(Enum):
+    Queue = "General"
+    Owner = "GlobalPlanningBridge"
+    msgID = 24
+    msgType = "dict"
+
+class RequestMapNodes(Enum):
+    Queue = "General"
+    Owner = "Dashboard"
+    msgID = 25
+    msgType = "bool"
+
 
 ################################# From Nucleo ##################################
 class BatteryLvl(Enum):

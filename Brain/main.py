@@ -52,6 +52,7 @@ ENABLE_TRAFFIC_COM = False
 ENABLE_SERIAL_HANDLER = True
 ENABLE_CMDVELBRIDGE = False
 ENABLE_ACKERMAN = True
+ENABLE_GLOBAL_PLANNING_BRIDGE = True
 
 # Pin to CPU cores 0–3
 # 프로세르를 모든 cpu 코어에 고정
@@ -90,6 +91,7 @@ from src.statemachine.systemMode import SystemMode
 from src.hardware.camera.processRosCamera import processRosCamera
 from src.bridge.processCmdbrdige import create_cmd_vel_bridge_process
 from src.bridge.processAckermannBridge import create_ackermann_bridge_process
+from src.bridge.processGlobalPlanningBridge import create_global_planning_bridge_process
 
 # ------ New component imports ends here ------#
 
@@ -207,6 +209,14 @@ else:
     processAckermannBridge = None
     ackermann_bridge_ready.set()
 
+# Initializing global planning bridge
+global_planning_bridge_ready = Event()
+if ENABLE_GLOBAL_PLANNING_BRIDGE:
+    processGlobalPlanningBridge = create_global_planning_bridge_process(queueList, ready_event=global_planning_bridge_ready)
+else:
+    processGlobalPlanningBridge = None
+    global_planning_bridge_ready.set()
+
 # Adding all processes to the list
 for proc, ready_event in [
     (processCamera, camera_ready),
@@ -216,6 +226,7 @@ for proc, ready_event in [
     (processDashboard, dashboard_ready),
     (processCmdVelBridge, cmdvel_bridge_ready),
     (processAckermannBridge, ackermann_bridge_ready),
+    (processGlobalPlanningBridge, global_planning_bridge_ready),
 ]:
     if proc is not None:
         allProcesses.append(proc)

@@ -65,7 +65,9 @@ export class WebSocketService {
     'Calibration',
     'CalibPWMData',
     'CalibRunDone',
-    'ImuAck'
+    'ImuAck',
+    'GlobalPath',
+    'MapNodes'
   ]);
 
   constructor() {
@@ -231,6 +233,14 @@ export class WebSocketService {
 
   receiveCalibrationData(): Observable<any> {
     return this.webSocket.fromEvent('Calibration');
+  }
+
+  receiveGlobalPath(): Observable<any> {
+    return this.webSocket.fromEvent('GlobalPath');
+  }
+
+  receiveMapNodes(): Observable<any> {
+    return this.webSocket.fromEvent('MapNodes');
   }
 
   receiveSteerLimits(): Observable<any> {
