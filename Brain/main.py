@@ -46,7 +46,7 @@ import psutil
 # Process enable flags
 ENABLE_GATEWAY = True
 ENABLE_DASHBOARD = True
-ENABLE_CAMERA = False
+ENABLE_CAMERA = True
 ENABLE_SEMAPHORES = False
 ENABLE_TRAFFIC_COM = False
 ENABLE_SERIAL_HANDLER = True
