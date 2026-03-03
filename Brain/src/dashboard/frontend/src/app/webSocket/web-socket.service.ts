@@ -65,13 +65,31 @@ export class WebSocketService {
     'Calibration',
     'CalibPWMData',
     'CalibRunDone',
-    'ImuAck'
+    'ImuAck',
+    'GlobalPath',
+    'MapNodes'
   ]);
 
   constructor() {
+    const params = new URLSearchParams(window.location.search);
+    const override = params.get('backend') || localStorage.getItem('dashboardBackend');
+    const protocol = window.location.protocol === 'https:' ? 'https' : 'http';
+    const fallbackHost = window.location.hostname || 'localhost';
+    let backendUrl: string;
+    if (override) {
+      if (override.startsWith('http://') || override.startsWith('https://')) {
+        backendUrl = override;
+      } else if (override.includes(':')) {
+        backendUrl = `${protocol}://${override}`;
+      } else {
+        backendUrl = `${protocol}://${override}:5005`;
+      }
+    } else {
+      backendUrl = `${protocol}://${fallbackHost}:5005`;
+    }
+
     this.webSocket = new Socket({
-    url: "http://192.168.86.65:5005",
-    // url: "http://localhost:5005",
+    url: backendUrl,
     options: {},
     });
     // 카메라 프레임을 ArrayBuffer로 받도록 설정
@@ -215,6 +233,14 @@ export class WebSocketService {
 
   receiveCalibrationData(): Observable<any> {
     return this.webSocket.fromEvent('Calibration');
+  }
+
+  receiveGlobalPath(): Observable<any> {
+    return this.webSocket.fromEvent('GlobalPath');
+  }
+
+  receiveMapNodes(): Observable<any> {
+    return this.webSocket.fromEvent('MapNodes');
   }
 
   receiveSteerLimits(): Observable<any> {

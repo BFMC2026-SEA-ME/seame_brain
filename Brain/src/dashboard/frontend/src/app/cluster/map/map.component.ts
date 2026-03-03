@@ -32,7 +32,6 @@ import { WebSocketService} from '../../webSocket/web-socket.service'
 
 import { CommonModule } from '@angular/common';
 
-import { MapCursorComponent } from './map-cursor/map-cursor.component';
 import { MapSemaphoreComponent } from './map-semaphore/map-semaphore.component';
  
 interface Semaphore { 
@@ -41,24 +40,42 @@ interface Semaphore {
   state: string;
 }
 
+interface MapNode {
+  id: string;
+  x: number;
+  y: number;
+  xSvg: number;
+  ySvg: number;
+}
+
 @Component({
   selector: 'app-map',
   standalone: true,
-  imports: [MapCursorComponent, MapSemaphoreComponent, CommonModule],
+  imports: [MapSemaphoreComponent, CommonModule],
   templateUrl: './map.component.html',
   styleUrl: './map.component.css'
 })
 export class MapComponent {
   @Input() cursorRotation: number = 0;
 
-  @ViewChild('imageElement') imageElementRef!: ElementRef<HTMLImageElement>;
   @ViewChild('imageContainer') imageContainerRef!: ElementRef<HTMLImageElement>;
+  @ViewChild('overlayElement') overlayElementRef!: ElementRef<SVGElement>;
 
   private mapX: number = 0;
   private mapY: number = 0;
+  private enableMapPan: boolean = false;
+  private readonly mapImageWidth = 772;
+  private readonly mapImageHeight = 600;
+  private readonly mapImageBounds = {
+    minX: 28,
+    minY: 18,
+    maxX: 732,
+    maxY: 564
+  };
+  private readonly mapFitPaddingRatio = 0.04;
 
   private screenSize = {"width": 100, "height": 100}; // screen size in %
-  private mapSize: number = 500; // map size in % for width
+  private mapSize: number = 50; // map size in % for width
   private mapWidth: number = 0;
   private mapHeight: number = 0;
 
@@ -67,11 +84,19 @@ export class MapComponent {
 
   private semaphoreXOffset: number = 10;
   private semaphoreYOffset: number = 1.45;
+  private hasLocation: boolean = false;
   
   public semaphores: Map<number, Semaphore> = new Map<number, Semaphore>();
+  public graphNodes: MapNode[] = [];
+  public pathPoints: string = '';
+  public selectedNodeId: string | null = null;
+
+  private graphBounds: { min_x: number; max_x: number; min_y: number; max_y: number } | null = null;
 
   private locationSubscription: Subscription | undefined;
   private semaphoresAndCarsSubscription: Subscription | undefined;
+  private mapNodesSubscription: Subscription | undefined;
+  private globalPathSubscription: Subscription | undefined;
 
   constructor( private  webSocketService: WebSocketService) { }
   
@@ -79,8 +104,15 @@ export class MapComponent {
   {
     this.locationSubscription = this.webSocketService.receiveLocation().subscribe(
       (message) => {
-        this.mapX = (parseFloat(message.value.x)*100/20.67)
-        this.mapY = (100 - parseFloat(message.value.y)*100/13.76) //magic percent + same system of coordinates
+        if (!this.enableMapPan) {
+          return;
+        }
+        this.hasLocation = true;
+        const locX = parseFloat(message.value.x);
+        const locY = parseFloat(message.value.y);
+        const pct = this.graphToPercent(locX, locY);
+        this.mapX = pct.x;
+        this.mapY = pct.y;
         this.updateMap()
       },
     );
@@ -91,6 +123,54 @@ export class MapComponent {
         this.semaphores.set(recv.id, {x: recv.x, y: recv.y, state: recv.state});
       },
     );
+
+    this.mapNodesSubscription = this.webSocketService.receiveMapNodes().subscribe(
+      (message) => {
+        const payload = (message as any)?.value ?? message;
+        if (!payload || !payload.nodes) {
+          return;
+        }
+
+        if (payload.bounds) {
+          this.graphBounds = payload.bounds;
+        }
+
+        this.graphNodes = (payload.nodes as any[]).map((node) => {
+          const svg = this.graphToSvg(node.x, node.y);
+          return {
+            id: String(node.id),
+            x: Number(node.x),
+            y: Number(node.y),
+            xSvg: svg.x,
+            ySvg: svg.y
+          };
+        });
+        if (!this.hasLocation && this.graphBounds) {
+          const centerGraphX = (this.graphBounds.min_x + this.graphBounds.max_x) / 2;
+          const centerGraphY = (this.graphBounds.min_y + this.graphBounds.max_y) / 2;
+          const centerPct = this.graphToPercent(centerGraphX, centerGraphY);
+          this.mapX = centerPct.x;
+          this.mapY = centerPct.y;
+        }
+        this.updateMap();
+      },
+    );
+
+    this.globalPathSubscription = this.webSocketService.receiveGlobalPath().subscribe(
+      (message) => {
+        const payload = (message as any)?.value ?? message;
+        const points = payload?.points as any[] | undefined;
+        if (!points || points.length === 0) {
+          this.pathPoints = '';
+          return;
+        }
+        this.pathPoints = points.map((pt) => {
+          const svg = this.graphToSvg(pt.x, pt.y);
+          return `${svg.x},${svg.y}`;
+        }).join(' ');
+      },
+    );
+    this.webSocketService.sendMessageToFlask('{\"Name\": \"RequestMapNodes\", \"Value\": true}');
     this.updateMap()
   }
 
@@ -101,27 +181,11 @@ export class MapComponent {
     if (this.semaphoresAndCarsSubscription) {
       this.semaphoresAndCarsSubscription.unsubscribe();
     }
-    this.webSocketService.disconnectSocket();
-  }
-
-  onLoadTrack(image: HTMLImageElement): void {
-    const imageContainer = document.getElementById("map-track-image-container") as HTMLElement;
-
-    if (imageContainer) {
-      imageContainer.style.width = `${this.screenSize["width"]}%`;
-      imageContainer.style.height = `${this.screenSize["height"]}%`;  
+    if (this.mapNodesSubscription) {
+      this.mapNodesSubscription.unsubscribe();
     }
-
-    this.mapWidth = image.width;
-    this.mapHeight = image.height;
-
-    const map = document.getElementById("map-track-image") as HTMLElement;
-
-    if (map) {
-      map.style.width = `${this.mapSize}%`;
-      map.style.height = `auto`;
-
-      this.mapWidth = this.mapSize;
+    if (this.globalPathSubscription) {
+      this.globalPathSubscription.unsubscribe();
     }
   }
 
@@ -147,44 +211,76 @@ export class MapComponent {
   }
 
   updateMap(): void {
-    const map = document.getElementById("map-track-image") as HTMLElement;
-    let imageContainerHeight: number = 0;
-
-    if (map) {
-      if (this.imageContainerRef) {
-        const imgContainer = this.imageContainerRef.nativeElement;
-        const rect = imgContainer.getBoundingClientRect();
-        imageContainerHeight = rect.height;
-      }
-
-      if (this.imageElementRef) {
-        const image = this.imageElementRef.nativeElement;
-        this.mapWidth = this.mapSize;
-        this.mapHeight = (100 * image.height) / imageContainerHeight;
-      }
-
-      const top = (this.mapY * this.mapHeight) / 100 - this.mapHeight - (this.screenSize["height"] / 2 - this.mapHeight);
-      const left = (this.mapX * this.mapWidth) / 100 - this.mapWidth - (this.screenSize["width"] / 2 - this.mapWidth);
-
-      map.style.top = `${-top}%`;
-      map.style.left = `${-left}%`;
-
-      this.semaphores.forEach((value: Semaphore, key: number) => {
-        console.log("???");
-        
-        const semaphore = document.getElementById("map-semaphore" + key) as HTMLElement;
-
-        if (semaphore) { 
-          const x = (value.x * 100/20.67);
-          const y = (value.y * 100/13.76);
-
-          const top_new = (y * this.mapHeight) / 100;
-          const left_new = (x * this.mapWidth) / 100;
-          
-          semaphore.style.top = `${(-top - this.semaphoreXOffset) + top_new}%`;
-          semaphore.style.left = `${(-left - this.semaphoreYOffset) + left_new}%`;
-        }
-      });
+    const overlay = this.overlayElementRef?.nativeElement ?? null;
+    if (!overlay) {
+      return;
     }
+
+    if (!this.enableMapPan || !this.hasLocation) {
+      overlay.style.top = `0%`;
+      overlay.style.left = `0%`;
+      overlay.style.width = `100%`;
+      overlay.style.height = `100%`;
+      return;
+    }
+
+    this.mapWidth = this.mapSize;
+    this.mapHeight = 100;
+
+    const top = (this.mapY * this.mapHeight) / 100 - this.mapHeight - (this.screenSize["height"] / 2 - this.mapHeight);
+    const left = (this.mapX * this.mapWidth) / 100 - this.mapWidth - (this.screenSize["width"] / 2 - this.mapWidth);
+
+    overlay.style.top = `${-top}%`;
+    overlay.style.left = `${-left}%`;
+    overlay.style.width = `${this.mapSize}%`;
+    overlay.style.height = `${this.mapHeight}%`;
+  }
+
+  onSelectNode(nodeId: string): void {
+    this.selectedNodeId = nodeId;
+    this.webSocketService.sendMessageToFlask(
+      `{\"Name\": \"GlobalPlanningGoalNodeId\", \"Value\": \"${nodeId}\"}`
+    );
+  }
+
+  private graphToPercent(x: number, y: number): { x: number; y: number } {
+    if (!this.graphBounds) {
+      return {
+        x: (x * 100) / 20.67,
+        y: 100 - (y * 100) / 13.76
+      };
+    }
+    const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
+    const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
+
+    return {
+      x: ((x - this.graphBounds.min_x) * 100) / spanX,
+      y: 100 - ((y - this.graphBounds.min_y) * 100) / spanY
+    };
+  }
+
+  private graphToSvg(x: number, y: number): { x: number; y: number } {
+    const imageSpanX = this.mapImageBounds.maxX - this.mapImageBounds.minX;
+    const imageSpanY = this.mapImageBounds.maxY - this.mapImageBounds.minY;
+    const padX = imageSpanX * this.mapFitPaddingRatio;
+    const padY = imageSpanY * this.mapFitPaddingRatio;
+    const minX = this.mapImageBounds.minX + padX;
+    const maxX = this.mapImageBounds.maxX - padX;
+    const minY = this.mapImageBounds.minY + padY;
+    const maxY = this.mapImageBounds.maxY - padY;
+    const fitSpanX = Math.max(0.0001, maxX - minX);
+    const fitSpanY = Math.max(0.0001, maxY - minY);
+    if (!this.graphBounds) {
+      return {
+        x: minX + (x / 20.67) * fitSpanX,
+        y: minY + (1 - (y / 13.76)) * fitSpanY
+      };
+    }
+    const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
+    const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
+    return {
+      x: minX + ((x - this.graphBounds.min_x) / spanX) * fitSpanX,
+      y: minY + (1 - ((y - this.graphBounds.min_y) / spanY)) * fitSpanY
+    };
   }
 }

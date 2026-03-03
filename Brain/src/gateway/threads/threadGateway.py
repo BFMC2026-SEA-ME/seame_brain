@@ -28,6 +28,7 @@
 
 from src.templates.threadwithstop import ThreadWithStop
 import time
+from queue import Empty
 
 class threadGateway(ThreadWithStop):
     """Thread which will handle processGateway functionalities.\n
@@ -102,13 +103,19 @@ class threadGateway(ThreadWithStop):
         Type = message["msgType"]
         Value = message["msgValue"]
         if (Owner, Id) in self.messageApproved:
-            for element in self.sendingList[Owner][Id]:
+            to_remove = []
+            for element, pipe in self.sendingList[Owner][Id].items():
                 # We send a dictionary that contain the type of the message and message
-                self.sendingList[Owner][Id][element].send(
-                    {"Type": Type, "value": Value, "id": Id, "Owner": Owner}
-                )
-                if self.debugging:
-                    self.logger.warning(message)
+                try:
+                    pipe.send({"Type": Type, "value": Value, "id": Id, "Owner": Owner})
+                    if self.debugging:
+                        self.logger.warning(message)
+                except (BrokenPipeError, EOFError, OSError, ConnectionResetError) as error:
+                    to_remove.append(element)
+                    if self.debugging:
+                        self.logger.warning("Dropping dead pipe for %s/%s/%s: %r", Owner, Id, element, error)
+            for element in to_remove:
+                del self.sendingList[Owner][Id][element]
 
     # ====================================================================================
 
@@ -129,17 +136,28 @@ class threadGateway(ThreadWithStop):
         message = None
         # We are using "elif" because we are processing one message at a time.
         # We work with the queues in the priority order( We start from the high priority to low priority)
-        if not self.queuesList["Critical"].empty():
-            message = self.queuesList["Critical"].get()
-        elif not self.queuesList["Warning"].empty():
-            message = self.queuesList["Warning"].get()
-        elif not self.queuesList["General"].empty():
-            message = self.queuesList["General"].get()
-        elif "Image" in self.queuesList and not self.queuesList["Image"].empty():
+        try:
+            message = self.queuesList["Critical"].get_nowait()
+        except Empty:
+            message = None
+        if message is None:
+            try:
+                message = self.queuesList["Warning"].get_nowait()
+            except Empty:
+                message = None
+        if message is None:
+            try:
+                message = self.queuesList["General"].get_nowait()
+            except Empty:
+                message = None
+        if message is None and "Image" in self.queuesList:
             # 이미지는 최신 1개만 전송하고 나머지는 드롭해 적체 방지
             latest = None
-            while not self.queuesList["Image"].empty():
-                latest = self.queuesList["Image"].get()
+            while True:
+                try:
+                    latest = self.queuesList["Image"].get_nowait()
+                except Empty:
+                    break
             message = latest
         if message is not None:
             self.send(message)

@@ -27,6 +27,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 
 import json
+import os
 import threading
 import time
 from datetime import datetime, timedelta
@@ -39,6 +40,9 @@ from src.utils.messages.allMessages import (
     SteerMotor,
     SpeedMotor,
     Brake,
+    DrivingMode,
+    EmergencyStop,
+    StateChange,
     ToggleBatteryLvl,
     ToggleImuData,
     ToggleInstant,
@@ -74,6 +78,9 @@ class threadWrite(ThreadWithStop):
 
         self.running = False
         self.engineEnabled = False
+        self._stop_latched = False
+        self._stop_sent = False
+        self._stop_kl_on_stop = os.getenv("STOP_HARD_KL0", "0").lower() in ("1", "true", "yes", "y")
         self.messageConverter = MessageConverter()
         self.steerMotorSender = messageHandlerSender(self.queuesList, SteerMotor)
         self.speedMotorSender = messageHandlerSender(self.queuesList, SpeedMotor)
@@ -100,6 +107,9 @@ class threadWrite(ThreadWithStop):
         self.steerMotorSubscriber = messageHandlerSubscriber(self.queuesList, SteerMotor, "lastOnly", True)
         self.speedMotorSubscriber = messageHandlerSubscriber(self.queuesList, SpeedMotor, "lastOnly", True)
         self.brakeSubscriber = messageHandlerSubscriber(self.queuesList, Brake, "lastOnly", True)
+        self.drivingModeSubscriber = messageHandlerSubscriber(self.queuesList, DrivingMode, "lastOnly", True)
+        self.emergencyStopSubscriber = messageHandlerSubscriber(self.queuesList, EmergencyStop, "lastOnly", True)
+        self.stateChangeSubscriber = messageHandlerSubscriber(self.queuesList, StateChange, "lastOnly", True)
         self.instantSubscriber = messageHandlerSubscriber(self.queuesList, ToggleInstant, "lastOnly", True)
         self.batterySubscriber = messageHandlerSubscriber(self.queuesList, ToggleBatteryLvl, "lastOnly", True)
         self.resourceMonitorSubscriber = messageHandlerSubscriber(self.queuesList, ToggleResourceMonitor, "lastOnly", True)
@@ -127,6 +137,53 @@ class threadWrite(ThreadWithStop):
                 if self._should_send_error():
                     self.serialConnectionStateSender.send(False)
                     print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;91mERROR\033[0m - Failed to write to serial ({e})")
+
+    def _flush_serial_output(self):
+        """Drop any pending bytes in the serial output buffer."""
+        try:
+            with self.process.serialLock:
+                serialCon = self.process.serialCon
+                if serialCon and self.process.serialConnected and serialCon.is_open:
+                    serialCon.reset_output_buffer()
+        except Exception as e:
+            if self._should_send_error():
+                print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m - Failed to flush serial output ({e})")
+
+    def _send_immediate_stop(self):
+        """Send a hard stop to NUCLEO and clear motion pipes."""
+        # Ensure stop commands aren't stuck behind buffered output.
+        self._flush_serial_output()
+        # Cancel any ongoing VCD (time-based) run first.
+        self.send_to_serial({"action": "vcd", "time": 0, "speed": 0, "steer": 0})
+        self.send_to_serial({"action": "brake", "steerAngle": 0})
+        self.send_to_serial({"action": "speed", "speed": 0})
+        self.send_to_serial({"action": "steer", "steerAngle": 0})
+        self._drain_motion_pipes()
+
+    def force_stop(self):
+        """Force an immediate stop (used by processSerialHandler on STOP)."""
+        self._stop_latched = True
+        self._stop_sent = False
+        self._send_immediate_stop()
+
+    def _apply_stop_once(self):
+        if self._stop_sent:
+            return
+        self._send_immediate_stop()
+        if self._stop_kl_on_stop:
+            # Hard cut: disable KL to stop any ongoing MCU control loop.
+            self.send_to_serial({"action": "kl", "mode": 0})
+            self.running = False
+            self.engineEnabled = False
+        self._stop_sent = True
+
+    def _drain_motion_pipes(self):
+        """Drop any queued motion commands to avoid stale commands after stop."""
+        self.brakeSubscriber.empty()
+        self.speedMotorSubscriber.empty()
+        self.steerMotorSubscriber.empty()
+        self.controlSubscriber.empty()
+        self.controlCalibSubscriber.empty()
 
     def load_config(self, configType):
         with open(self.configPath, "r") as file:
@@ -162,6 +219,35 @@ class threadWrite(ThreadWithStop):
     def thread_work(self):
         """In this function we check if we got the enable engine signal. After we got it we will start getting messages from raspberry PI. It will transform them into NUCLEO commands and send them."""
         try:
+            # EmergencyStop (Critical) should preempt any mode updates in this cycle.
+            emergencyRecv = self.emergencyStopSubscriber.receive()
+            emergency_override = emergencyRecv is not None
+            if emergency_override:
+                self._stop_latched = True
+                self._send_immediate_stop()
+
+            # Critical state-change (e.g., STOP) should preempt mode updates.
+            stateRecv = None
+            state_override = False
+            if not emergency_override:
+                stateRecv = self.stateChangeSubscriber.receive()
+                state_override = stateRecv is not None
+                if stateRecv is not None:
+                    state_lower = str(stateRecv).lower()
+                    if state_lower == "stop":
+                        self._stop_latched = True
+                    else:
+                        self._stop_latched = False
+
+            if not emergency_override and not state_override:
+                modeRecv = self.drivingModeSubscriber.receive()
+                if modeRecv is not None:
+                    mode_lower = str(modeRecv).lower()
+                    if mode_lower == "stop":
+                        self._stop_latched = True
+                    else:
+                        self._stop_latched = False
+
             klRecv = self.klSubscriber.receive()
             if klRecv is not None:
                 if self.debugger:
@@ -198,7 +284,12 @@ class threadWrite(ThreadWithStop):
                 command = {"action": "steerLimits", "request": 0}
                 self.send_to_serial(command)
 
-            if self.running:
+            if self._stop_latched:
+                # While stopped, ignore any motion commands.
+                self._apply_stop_once()
+                self._drain_motion_pipes()
+            elif self.running:
+                self._stop_sent = False
                 if self.engineEnabled:
                     brakeRecv = self.brakeSubscriber.receive()
                     if brakeRecv is not None:

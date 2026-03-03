@@ -27,6 +27,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 
 import inspect
+import pickle
+import time
 from multiprocessing import Pipe
 
 class messageHandlerSubscriber: 
@@ -43,6 +45,9 @@ class messageHandlerSubscriber:
         self._message = message
         self._deliveryMode = str.lower(deliveryMode)
         self._pipeRecv, self._pipeSend = Pipe(duplex=False)
+        self._subscribed = False
+        self._last_recover_time = 0.0
+        self._recover_backoff_s = 0.1
         frame = inspect.currentframe().f_back # type: ignore
         if 'self' in frame.f_locals: # type: ignore
             self._receiver = frame.f_locals['self'].__class__.__name__ # type: ignore
@@ -56,6 +61,42 @@ class messageHandlerSubscriber:
             print("WARNING! Wrong delivery mode supplied.", deliveryMode, "instead of FIFO or LastOnly.", self._message, self._receiver)
             print("WARNING! Switching to FIFO")
             self._deliveryMode = "fifo"
+
+    def _recover_pipe(self, error):
+        now = time.monotonic()
+        if now - self._last_recover_time < self._recover_backoff_s:
+            time.sleep(self._recover_backoff_s - (now - self._last_recover_time))
+        self._last_recover_time = time.monotonic()
+
+        was_subscribed = self._subscribed
+        if was_subscribed:
+            try:
+                self.unsubscribe()
+            except Exception:
+                pass
+
+        try:
+            self._pipeRecv.close()
+        except Exception:
+            pass
+        try:
+            self._pipeSend.close()
+        except Exception:
+            pass
+
+        self._pipeRecv, self._pipeSend = Pipe(duplex=False)
+
+        if was_subscribed:
+            self.subscribe()
+
+        print("WARNING! Pipe reset due to error:", repr(error), self._message, self._receiver)
+
+    def _recv_once(self):
+        try:
+            return self._pipeRecv.recv()
+        except (EOFError, OSError, BrokenPipeError, ConnectionResetError, pickle.UnpicklingError) as error:
+            self._recover_pipe(error)
+            return None
 
     def receive(self):
         """
@@ -76,7 +117,9 @@ class messageHandlerSubscriber:
             message's data type: The received message.
         """
         
-        message = self._pipeRecv.recv()
+        message = self._recv_once()
+        if message is None:
+            return None
         messageType = type(message["value"]).__name__
         
         if self._deliveryMode == "fifo":
@@ -86,7 +129,9 @@ class messageHandlerSubscriber:
         
         elif self._deliveryMode == "lastonly":
             while (self._pipeRecv.poll()):
-                message = self._pipeRecv.recv()
+                message = self._recv_once()
+                if message is None:
+                    return None
 
             if messageType != self._message.msgType.value:
                 print("WARNING! Message type and value type are not matching.", self._message, "received:", messageType, "expected:", self._message.msgType.value)
@@ -97,7 +142,8 @@ class messageHandlerSubscriber:
         Empties the receiving pipe of any existing data.
         """
         while self._pipeRecv.poll():
-            self._pipeRecv.recv()
+            if self._recv_once() is None:
+                break
 
     def subscribe(self):
         """
@@ -111,6 +157,7 @@ class messageHandlerSubscriber:
                 "To": {"receiver": self._receiver, "pipe": self._pipeSend},
             }
         )
+        self._subscribed = True
 
     def unsubscribe(self):
         """
@@ -124,6 +171,7 @@ class messageHandlerSubscriber:
                 "To": {"receiver": self._receiver}
             }
         )
+        self._subscribed = False
 
     def is_data_in_pipe(self):
         """

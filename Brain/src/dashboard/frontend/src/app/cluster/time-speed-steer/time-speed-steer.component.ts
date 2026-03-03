@@ -60,9 +60,8 @@ export class TimeSpeedSteerComponent implements OnInit, OnDestroy {
   }
 
   activateFunction() {
-    // Ensure steer value is within limits
-    const limitedSteer = Math.min(Math.max(this.steer, -this.maxSteerLowerLimit), this.maxSteerUpperLimit);
-    this.webSocketService.sendMessageToFlask(`{"Name": "Control", "Value": {"Time":"${this.time*10}","Speed":"${this.speed*10}","Steer":"${limitedSteer*10}"}}`);
+    // Disabled: manual submit control is not used right now.
+    return;
   }
 
   ngOnDestroy() {

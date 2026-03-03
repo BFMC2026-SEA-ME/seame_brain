@@ -43,26 +43,58 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     width: 100%;
     height: 100%;
     overflow: hidden;
-    mask-image: radial-gradient(closest-side, rgba(0, 0, 0, 1) 60%, rgba(0, 0, 0, 0) 90%);
-    -webkit-mask-image: radial-gradient(closest-side, rgba(0, 0, 0, 1) 60%, rgba(0, 0, 0, 0) 90%);
-    mask-size: 100% 100%;
-    mask-repeat: no-repeat;
-    mask-position: center;
-    -webkit-mask-size: 100% 100%;
-    -webkit-mask-repeat: no-repeat;
-    -webkit-mask-position: center;
 }
 
 #map-track-image-container {
     display: flex;
     position: relative;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    justify-content: center;
+    align-items: center;
+    aspect-ratio: 704 / 546;
+    overflow: hidden;
 }
 
-#map-track-image {
+#map-track-overlay {
     position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 2;
+    pointer-events: auto;
+    width: 100%;
+    height: 100%;
 }
 
-#map-cursor { 
-    position: absolute;
-    filter: drop-shadow(0 0 0.5vw rgba(0, 0, 0, 0.5));
+.map-image {
+    pointer-events: none;
+}
+
+.map-path {
+    fill: none;
+    stroke: rgba(0, 210, 200, 0.9);
+    stroke-width: 0.35;
+    pointer-events: none;
+}
+
+.map-frame {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.6);
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
+.map-node {
+    fill: rgba(255, 182, 0, 0.9);
+    stroke: rgba(0, 0, 0, 0.6);
+    stroke-width: 0.15;
+    cursor: pointer;
+    pointer-events: all;
+}
+
+.map-node.selected {
+    fill: rgba(255, 70, 70, 0.95);
 }

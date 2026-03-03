@@ -32,8 +32,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 }
 
 .cluster-container { 
-  width: var(--cluster-width);
-  height: calc(var(--cluster-width) / var(--aspect-ratio));
+  width: 100%;
+  height: 100%;
   display: flex;
   position: relative;
   justify-content: center;
