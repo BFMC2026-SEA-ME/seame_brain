@@ -72,7 +72,7 @@ export class MapComponent {
     maxX: 732,
     maxY: 564
   };
-  private readonly mapFitPaddingRatio = 0.05;
+  private readonly mapFitPaddingRatio = 0.06;
 
   private screenSize = {"width": 100, "height": 100}; // screen size in %
   private mapSize: number = 50; // map size in % for width
