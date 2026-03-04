@@ -35,12 +35,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
         <polyline *ngIf="pathPoints" class="map-path" [attr.points]="pathPoints"></polyline>
         <g *ngFor="let node of graphNodes">
           <circle
+            class="map-node-hit"
+            [attr.cx]="node.xSvg"
+            [attr.cy]="node.ySvg"
+            (click)="onSelectNode(node.id)"
+            r="6"
+          ></circle>
+          <circle
             class="map-node"
             [class.selected]="node.id === selectedNodeId"
             [attr.cx]="node.xSvg"
             [attr.cy]="node.ySvg"
-            r="4"
-            (click)="onSelectNode(node.id)"
+            r="3"
           ></circle>
         </g>
       </svg>
