@@ -83,6 +83,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._last_pose_for_speed = None  # (x, y, monotonic_s)
         self._last_encoder_distance = None
         self._last_encoder_time = None
+        self._use_pose_speed_fallback = os.getenv("TRAFFIC_SPEED_FALLBACK_POSE", "0").lower() in ("1", "true", "yes", "y")
 
         # [ADDED] Server upload payload is refreshed at 1 Hz.
         self._min_publish_period = 1.0  # seconds
@@ -113,6 +114,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._last_no_speed_log = 0.0
         self._last_speed_send_log = 0.0
         self._last_speed_input_log = 0.0
+        self._last_ros_match_log = 0.0
 
         if not self._ros_enabled:
             print(
@@ -129,6 +131,12 @@ class threadTrafficDataCollector(ThreadWithStop):
                 f"\033[94m{self._tcp_host}:{self._tcp_port}\033[0m "
                 f"(bind_ip={bind_info}, timeout={self._tcp_timeout}s, send_speed={self._tcp_send_speed})"
             )
+            if self._tcp_send_speed:
+                print(
+                    f"\033[1;97m[ Traffic Communication ] :\033[0m "
+                    f"\033[1;92mINFO\033[0m - Speed source policy "
+                    f"(wheel first, pose_fallback={self._use_pose_speed_fallback})"
+                )
 
     def thread_work(self):
         self._spin_ros_once()
@@ -136,6 +144,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._flush_to_tcp()
         self._log_waiting_pose()
         self._log_waiting_speed()
+        self._log_ros_match_status()
 
     def stop(self):
         self._close_tcp()
@@ -218,19 +227,20 @@ class threadTrafficDataCollector(ThreadWithStop):
         yaw_deg_ccw = math.degrees(math.atan2(siny_cosp, cosy_cosp))
         self.latest_rot = (-yaw_deg_ccw) % 360.0
 
-        # Fallback speed from pose delta (used when wheel speed topics are missing/stale).
+        # Optional fallback speed from pose delta when wheel speed topics are missing/stale.
         now = time.monotonic()
-        if self._last_pose_for_speed is not None:
-            px, py, pt = self._last_pose_for_speed
-            dt = now - pt
-            if dt > 0.05:
-                dist_m = math.hypot(x - px, y - py)
-                pose_speed_cms = (dist_m / dt) * 100.0
-                if now - self._last_speed_update > 2.0:
-                    self.latest_speed = pose_speed_cms
-                    self._last_speed_update = now
-                    self._speed_source = "pose_fallback"
-        self._last_pose_for_speed = (x, y, now)
+        if self._use_pose_speed_fallback:
+            if self._last_pose_for_speed is not None:
+                px, py, pt = self._last_pose_for_speed
+                dt = now - pt
+                if dt > 0.05:
+                    dist_m = math.hypot(x - px, y - py)
+                    pose_speed_cms = (dist_m / dt) * 100.0
+                    if now - self._last_speed_update > 2.0:
+                        self.latest_speed = pose_speed_cms
+                        self._last_speed_update = now
+                        self._speed_source = "pose_fallback"
+            self._last_pose_for_speed = (x, y, now)
 
     def _on_speed(self, msg):
         # /wheel_encoder: x=rpm, y=velocity[m/s], z=distance (cumulative)
@@ -440,6 +450,24 @@ class threadTrafficDataCollector(ThreadWithStop):
             f"(rpm={float(rpm):.3f}, vel_y={float(vel_raw):.6f}, dist_z={float(dist_raw):.6f}) "
             f"-> speed={float(speed_cms):.3f} cm/s (source={source})"
         )
+
+    def _log_ros_match_status(self):
+        if self._ros_node is None:
+            return
+        now = time.monotonic()
+        if now - self._last_ros_match_log < 5.0:
+            return
+        self._last_ros_match_log = now
+        try:
+            enc_pub = self._ros_node.count_publishers(self.SPEED_TOPIC)
+            twist_pub = self._ros_node.count_publishers(self.SPEED_TWIST_TOPIC)
+            print(
+                f"\033[1;97m[ Traffic Communication ] :\033[0m "
+                f"\033[1;92mINFO\033[0m - ROS match speed pubs "
+                f"({self.SPEED_TOPIC}={enc_pub}, {self.SPEED_TWIST_TOPIC}={twist_pub})"
+            )
+        except Exception:
+            pass
 
     def _compute_tcp_route_diag(self):
         """Best-effort route diagnostics for timeout troubleshooting."""
