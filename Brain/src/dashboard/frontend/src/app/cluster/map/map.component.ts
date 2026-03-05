@@ -73,6 +73,9 @@ export class MapComponent {
     maxY: 564
   };
   private readonly mapFitPaddingRatio = 0.06;
+  // Expand node spacing around map center to better match track geometry.
+  private readonly nodeSpreadScaleX = 1.06;
+  private readonly nodeSpreadScaleY = 1.06;
 
   private screenSize = {"width": 100, "height": 100}; // screen size in %
   private mapSize: number = 50; // map size in % for width
@@ -272,17 +275,25 @@ export class MapComponent {
     const maxY = this.mapImageBounds.maxY - padY;
     const fitSpanX = Math.max(0.0001, maxX - minX);
     const fitSpanY = Math.max(0.0001, maxY - minY);
+    let nx: number;
+    let ny: number;
     if (!this.graphBounds) {
-      return {
-        x: minX + (x / 20.67) * fitSpanX,
-        y: minY + (1 - (y / 13.76)) * fitSpanY
-      };
+      nx = x / 20.67;
+      ny = 1 - (y / 13.76);
+    } else {
+      const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
+      const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
+      nx = (x - this.graphBounds.min_x) / spanX;
+      ny = 1 - ((y - this.graphBounds.min_y) / spanY);
     }
-    const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
-    const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
+
+    // Apply center-based spread scaling so spacing between nodes increases.
+    nx = (nx - 0.5) * this.nodeSpreadScaleX + 0.5;
+    ny = (ny - 0.5) * this.nodeSpreadScaleY + 0.5;
+
     return {
-      x: minX + ((x - this.graphBounds.min_x) / spanX) * fitSpanX,
-      y: minY + (1 - ((y - this.graphBounds.min_y) / spanY)) * fitSpanY
+      x: minX + nx * fitSpanX,
+      y: minY + ny * fitSpanY
     };
   }
 
