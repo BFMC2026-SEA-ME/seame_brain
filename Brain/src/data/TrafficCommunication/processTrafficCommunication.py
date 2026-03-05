@@ -88,7 +88,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._tcp_port = int(os.getenv("TRAFFIC_TCP_PORT", "5000"))
         self._tcp_bind_ip = os.getenv("TRAFFIC_TCP_BIND_IP", "").strip()
         self._tcp_timeout = float(os.getenv("TRAFFIC_TCP_CONNECT_TIMEOUT", "3.0"))
-        self._tcp_send_speed = os.getenv("TRAFFIC_TCP_SEND_SPEED", "0").lower() in ("1", "true", "yes", "y")
+        self._tcp_send_speed = os.getenv("TRAFFIC_TCP_SEND_SPEED", "1").lower() in ("1", "true", "yes", "y")
         self._sock = None
         self._next_tcp_retry = 0.0
         self._last_tcp_diag_log = 0.0
@@ -117,7 +117,7 @@ class threadTrafficDataCollector(ThreadWithStop):
                 f"\033[1;97m[ Traffic Communication ] :\033[0m "
                 f"\033[1;92mINFO\033[0m - Simple TCP target "
                 f"\033[94m{self._tcp_host}:{self._tcp_port}\033[0m "
-                f"(bind_ip={bind_info}, timeout={self._tcp_timeout}s)"
+                f"(bind_ip={bind_info}, timeout={self._tcp_timeout}s, send_speed={self._tcp_send_speed})"
             )
 
     def thread_work(self):
