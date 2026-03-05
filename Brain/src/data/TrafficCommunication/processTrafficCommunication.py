@@ -86,9 +86,12 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._tcp_enabled = os.getenv("TRAFFIC_SIMPLE_TCP_ENABLE", "1").lower() in ("1", "true", "yes", "y")
         self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.60")
         self._tcp_port = int(os.getenv("TRAFFIC_TCP_PORT", "5000"))
+        self._tcp_bind_ip = os.getenv("TRAFFIC_TCP_BIND_IP", "").strip()
+        self._tcp_timeout = float(os.getenv("TRAFFIC_TCP_CONNECT_TIMEOUT", "3.0"))
         self._tcp_send_speed = os.getenv("TRAFFIC_TCP_SEND_SPEED", "0").lower() in ("1", "true", "yes", "y")
         self._sock = None
         self._next_tcp_retry = 0.0
+        self._last_tcp_diag_log = 0.0
 
         self._ros_enabled = (
             rclpy is not None
@@ -99,11 +102,29 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._ros_node = None
         self._ros_initialized_here = False
         self._next_ros_retry = 0.0
+        self._last_no_pose_log = 0.0
+
+        if not self._ros_enabled:
+            print(
+                f"\033[1;97m[ Traffic Communication ] :\033[0m "
+                f"\033[1;93mWARNING\033[0m - ROS2 deps unavailable "
+                f"(rclpy/geometry_msgs missing). "
+                f"Pose-based traffic send is disabled."
+            )
+        if self._tcp_enabled:
+            bind_info = self._tcp_bind_ip if self._tcp_bind_ip else "auto"
+            print(
+                f"\033[1;97m[ Traffic Communication ] :\033[0m "
+                f"\033[1;92mINFO\033[0m - Simple TCP target "
+                f"\033[94m{self._tcp_host}:{self._tcp_port}\033[0m "
+                f"(bind_ip={bind_info}, timeout={self._tcp_timeout}s)"
+            )
 
     def thread_work(self):
         self._spin_ros_once()
         self._flush_to_shared_memory()
         self._flush_to_tcp()
+        self._log_waiting_pose()
 
     def stop(self):
         self._close_tcp()
@@ -212,7 +233,9 @@ class threadTrafficDataCollector(ThreadWithStop):
 
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(3.0)
+            if self._tcp_bind_ip:
+                sock.bind((self._tcp_bind_ip, 0))
+            sock.settimeout(self._tcp_timeout)
             sock.connect((self._tcp_host, self._tcp_port))
             sock.settimeout(None)
             self._sock = sock
@@ -225,9 +248,13 @@ class threadTrafficDataCollector(ThreadWithStop):
         except Exception as exc:
             self._close_tcp()
             self._next_tcp_retry = now + 3.0
+            diag = self._compute_tcp_route_diag()
             print(
                 f"\033[1;97m[ Traffic Communication ] :\033[0m "
-                f"\033[1;93mWARNING\033[0m - Simple TCP connect failed ({exc})"
+                f"\033[1;93mWARNING\033[0m - Simple TCP connect failed "
+                f"to \033[94m{self._tcp_host}:{self._tcp_port}\033[0m "
+                f"(bind_ip={self._tcp_bind_ip if self._tcp_bind_ip else 'auto'}) "
+                f"({exc}){diag}"
             )
             return False
 
@@ -292,6 +319,38 @@ class threadTrafficDataCollector(ThreadWithStop):
                 return
 
         self._last_tcp_send = now
+
+    def _log_waiting_pose(self):
+        if not self._tcp_enabled:
+            return
+        if self.latest_pos is not None and self.latest_rot is not None:
+            return
+        now = time.monotonic()
+        if now - self._last_no_pose_log < 5.0:
+            return
+        self._last_no_pose_log = now
+        print(
+            f"\033[1;97m[ Traffic Communication ] :\033[0m "
+            f"\033[1;93mWARNING\033[0m - Waiting for pose topic "
+            f"\033[94m{self.POS_TOPIC}\033[0m to publish PoseStamped"
+        )
+
+    def _compute_tcp_route_diag(self):
+        """Best-effort route diagnostics for timeout troubleshooting."""
+        now = time.monotonic()
+        if now - self._last_tcp_diag_log < 3.0:
+            return ""
+        self._last_tcp_diag_log = now
+        try:
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            if self._tcp_bind_ip:
+                test_sock.bind((self._tcp_bind_ip, 0))
+            test_sock.connect((self._tcp_host, self._tcp_port))
+            local_ip, local_port = test_sock.getsockname()
+            test_sock.close()
+            return f" [route local={local_ip}:{local_port}]"
+        except Exception as diag_exc:
+            return f" [route unknown: {diag_exc}]"
 
 ##########################################################
 
