@@ -45,7 +45,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
             [attr.cx]="node.xSvg"
             [attr.cy]="node.ySvg"
             (click)="onSelectNode(node.id)"
-            r="6"
+            r="8"
           ></circle>
           <circle
             class="map-node"
@@ -55,7 +55,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
             [class.checkpoint-passed]="isCheckpointNode(node.id) && isPassedCheckpointNode(node.id)"
             [attr.cx]="node.xSvg"
             [attr.cy]="node.ySvg"
-            r="3"
+            r="4.5"
           ></circle>
         </g>
       </svg>
