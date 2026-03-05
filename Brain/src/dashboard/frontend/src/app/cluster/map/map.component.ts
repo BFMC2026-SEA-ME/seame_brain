@@ -77,7 +77,7 @@ export class MapComponent {
   private readonly nodeSpreadScaleX = 1.07;
   private readonly nodeSpreadScaleY = 1.02;
   // Fine vertical alignment (positive value moves nodes downward).
-  private readonly nodeOffsetSvgY = 4.0;
+  private readonly nodeOffsetSvgY = 6.0;
 
   private screenSize = {"width": 100, "height": 100}; // screen size in %
   private mapSize: number = 50; // map size in % for width
