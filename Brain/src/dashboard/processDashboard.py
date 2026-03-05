@@ -180,6 +180,7 @@ class processDashboard(WorkerProcess):
         self.messagesAndVals.pop("AliveSignal", None)
         self.messagesAndVals.pop("CalibPWMData", None)
         self.messagesAndVals.pop("CalibRunDone", None)
+        self.messagesAndVals.pop("GlobalPath", None)
         self.subscribe()
     
 

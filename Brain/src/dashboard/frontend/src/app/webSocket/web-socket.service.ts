@@ -67,7 +67,8 @@ export class WebSocketService {
     'CalibRunDone',
     'ImuAck',
     'GlobalPath',
-    'MapNodes'
+    'MapNodes',
+    'GlobalPose'
   ]);
 
   constructor() {
@@ -241,6 +242,10 @@ export class WebSocketService {
 
   receiveMapNodes(): Observable<any> {
     return this.webSocket.fromEvent('MapNodes');
+  }
+
+  receiveGlobalPose(): Observable<any> {
+    return this.webSocket.fromEvent('GlobalPose');
   }
 
   receiveSteerLimits(): Observable<any> {

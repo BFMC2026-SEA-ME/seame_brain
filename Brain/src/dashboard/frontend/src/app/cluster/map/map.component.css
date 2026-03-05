@@ -100,6 +100,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     fill: rgba(255, 70, 70, 0.95);
 }
 
+.map-node.current {
+    fill: rgba(55, 190, 255, 0.95);
+    stroke: rgba(0, 0, 0, 0.9);
+}
+
+.map-current-pose {
+    fill: rgba(55, 190, 255, 0.9);
+    stroke: rgba(255, 255, 255, 0.95);
+    stroke-width: 1.2;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
 .map-node-hit {
     fill: transparent;
     stroke: transparent;

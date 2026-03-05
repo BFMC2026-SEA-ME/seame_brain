@@ -32,7 +32,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
       <svg #overlayElement id="map-track-overlay" viewBox="28 18 704 546" preserveAspectRatio="xMidYMid meet">
         <image href="/assets/lab_track.png" x="0" y="0" width="772" height="600" class="map-image" />
         <rect class="map-frame" x="28.5" y="18.5" width="703" height="545"></rect>
-        <polyline *ngIf="pathPoints" class="map-path" [attr.points]="pathPoints"></polyline>
+        <circle
+          *ngIf="currentPoseSvg"
+          class="map-current-pose"
+          [attr.cx]="currentPoseSvg.x"
+          [attr.cy]="currentPoseSvg.y"
+          r="4"
+        ></circle>
         <g *ngFor="let node of graphNodes">
           <circle
             class="map-node-hit"
@@ -44,6 +50,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
           <circle
             class="map-node"
             [class.selected]="node.id === selectedNodeId"
+            [class.current]="node.id === currentPoseNodeId"
             [attr.cx]="node.xSvg"
             [attr.cy]="node.ySvg"
             r="3"

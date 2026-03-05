@@ -3,6 +3,7 @@
 - Receives goal node id from dashboard queue and publishes to
   `/global_planning/goal_node_id` (std_msgs/String).
 - Subscribes to `/global_path` (nav_msgs/Path) and forwards it to the dashboard.
+- Subscribes to `/global_pose` and forwards current vehicle pose to dashboard.
 - Optionally loads GraphML nodes and forwards node list to the dashboard so
   the UI can render selectable nodes.
 """
@@ -12,6 +13,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Mapping, MutableMapping, Optional, Tuple
@@ -23,6 +25,7 @@ try:
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from std_msgs.msg import String
     from nav_msgs.msg import Path as NavPath
+    from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 except Exception:  # allow running without ROS2 deps
     rclpy = None
     SingleThreadedExecutor = None
@@ -32,6 +35,8 @@ except Exception:  # allow running without ROS2 deps
     QoSReliabilityPolicy = None
     String = None
     NavPath = None
+    PoseStamped = None
+    PoseWithCovarianceStamped = None
 
 # Enable imports of BFMC frameworks.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # .../ros2_ws/src/Brain
@@ -42,6 +47,7 @@ from src.templates.threadwithstop import ThreadWithStop  # type: ignore
 from src.utils.messages.allMessages import (  # type: ignore
     GlobalPlanningGoalNodeId,
     GlobalPath,
+    GlobalPose,
     MapNodes,
     RequestMapNodes,
 )
@@ -165,12 +171,26 @@ def _parse_graphml_nodes(path: Path) -> Tuple[List[Dict[str, object]], Dict[str,
 
 
 class GlobalPlanningBridgeNode(Node):
-    def __init__(self, queues_list: Mapping[str, object], path_sender: messageHandlerSender):
+    def __init__(
+        self,
+        queues_list: Mapping[str, object],
+        path_sender: messageHandlerSender,
+        pose_sender: messageHandlerSender,
+    ):
         super().__init__("global_planning_bridge")
         self._queues_list = queues_list
         self._path_sender = path_sender
+        self._pose_sender = pose_sender
         self._last_path_send = 0.0
         self._path_send_period = 0.5  # 2 Hz
+        self._last_pose_send = 0.0
+        self._pose_send_period = 0.1  # 10 Hz
+        self._enable_path_stream = str(os.environ.get("DASHBOARD_ENABLE_GLOBAL_PATH", "0")).lower() in (
+            "1",
+            "true",
+            "yes",
+            "y",
+        )
 
         goal_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -184,12 +204,53 @@ class GlobalPlanningBridgeNode(Node):
         )
 
         self._goal_pub = self.create_publisher(String, "/global_planning/goal_node_id", goal_qos)
-        self._path_sub = self.create_subscription(
-            NavPath,
-            "/global_path",
-            self._on_path,
-            path_qos,
-        )
+        self._path_sub = None
+        if self._enable_path_stream:
+            if NavPath is not None:
+                self._path_sub = self.create_subscription(
+                    NavPath,
+                    "/global_path",
+                    self._on_path,
+                    path_qos,
+                )
+            else:
+                self.get_logger().warning("NavPath not available, /global_path subscription disabled.")
+        else:
+            self.get_logger().info("GlobalPath stream to dashboard is disabled (DASHBOARD_ENABLE_GLOBAL_PATH=0).")
+        self._pose_sub = None
+        self._global_pose_topic = str(os.environ.get("GLOBAL_POSE_TOPIC", "/global_pose"))
+        self._global_pose_type = str(os.environ.get("GLOBAL_POSE_TYPE", "pose_stamped")).lower()
+
+        try:
+            if self._global_pose_type in (
+                "pose_with_covariance_stamped",
+                "posewithcovariancestamped",
+                "cov",
+                "covariance",
+            ):
+                if PoseWithCovarianceStamped is not None:
+                    self._pose_sub = self.create_subscription(
+                        PoseWithCovarianceStamped,
+                        self._global_pose_topic,
+                        self._on_pose_with_covariance,
+                        path_qos,
+                    )
+                else:
+                    self.get_logger().warning(
+                        "PoseWithCovarianceStamped not available, /global_pose subscription disabled."
+                    )
+            else:
+                if PoseStamped is not None:
+                    self._pose_sub = self.create_subscription(
+                        PoseStamped,
+                        self._global_pose_topic,
+                        self._on_pose_stamped,
+                        path_qos,
+                    )
+                else:
+                    self.get_logger().warning("PoseStamped not available, /global_pose subscription disabled.")
+        except Exception as exc:
+            self.get_logger().warning(f"Failed to subscribe {self._global_pose_topic}: {exc}")
 
     def publish_goal(self, node_id: str) -> None:
         msg = String()
@@ -213,6 +274,49 @@ class GlobalPlanningBridgeNode(Node):
         self._path_sender.send(payload)
         self._last_path_send = now
 
+    @staticmethod
+    def _quat_to_yaw(x: float, y: float, z: float, w: float) -> float:
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        return math.atan2(siny_cosp, cosy_cosp)
+
+    def _send_pose(self, x: float, y: float, frame: str, qx: float, qy: float, qz: float, qw: float) -> None:
+        now = time.time()
+        if now - self._last_pose_send < self._pose_send_period:
+            return
+        payload = {
+            "frame": frame or "map",
+            "x": float(x),
+            "y": float(y),
+            "yaw": self._quat_to_yaw(float(qx), float(qy), float(qz), float(qw)),
+        }
+        self._pose_sender.send(payload)
+        self._last_pose_send = now
+
+    def _on_pose_stamped(self, msg: PoseStamped) -> None:
+        pose = msg.pose
+        self._send_pose(
+            pose.position.x,
+            pose.position.y,
+            msg.header.frame_id or "map",
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        )
+
+    def _on_pose_with_covariance(self, msg: PoseWithCovarianceStamped) -> None:
+        pose = msg.pose.pose
+        self._send_pose(
+            pose.position.x,
+            pose.position.y,
+            msg.header.frame_id or "map",
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        )
+
 
 class _GlobalPlanningBridgeThread(ThreadWithStop):
     def __init__(self, queues_list: Mapping[str, object]) -> None:
@@ -228,6 +332,7 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
             self._queues_list, RequestMapNodes, "lastOnly", True
         )
         self._path_sender = messageHandlerSender(self._queues_list, GlobalPath, drop_old=True)
+        self._pose_sender = messageHandlerSender(self._queues_list, GlobalPose, drop_old=True)
         self._map_nodes_sender = messageHandlerSender(self._queues_list, MapNodes, drop_old=True)
 
         self._graph_sent = False
@@ -278,7 +383,7 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
             if not rclpy.ok():
                 rclpy.init(args=None)
 
-            self._node = GlobalPlanningBridgeNode(self._queues_list, self._path_sender)
+            self._node = GlobalPlanningBridgeNode(self._queues_list, self._path_sender, self._pose_sender)
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
         except Exception as exc:

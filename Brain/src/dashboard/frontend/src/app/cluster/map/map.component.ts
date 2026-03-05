@@ -90,30 +90,37 @@ export class MapComponent {
   public graphNodes: MapNode[] = [];
   public pathPoints: string = '';
   public selectedNodeId: string | null = null;
+  public currentPoseSvg: { x: number; y: number } | null = null;
+  public currentPoseNodeId: string | null = null;
 
   private graphBounds: { min_x: number; max_x: number; min_y: number; max_y: number } | null = null;
+  private currentPoseGraph: { x: number; y: number } | null = null;
 
   private locationSubscription: Subscription | undefined;
   private semaphoresAndCarsSubscription: Subscription | undefined;
   private mapNodesSubscription: Subscription | undefined;
-  private globalPathSubscription: Subscription | undefined;
 
   constructor( private  webSocketService: WebSocketService) { }
   
   ngOnInit()
   {
-    this.locationSubscription = this.webSocketService.receiveLocation().subscribe(
+    this.locationSubscription = this.webSocketService.receiveGlobalPose().subscribe(
       (message) => {
-        if (!this.enableMapPan) {
+        const payload = (message as any)?.value ?? message;
+        if (!payload) {
           return;
         }
+        const locX = Number(payload.x);
+        const locY = Number(payload.y);
+        if (!Number.isFinite(locX) || !Number.isFinite(locY)) {
+          return;
+        }
+
         this.hasLocation = true;
-        const locX = parseFloat(message.value.x);
-        const locY = parseFloat(message.value.y);
-        const pct = this.graphToPercent(locX, locY);
-        this.mapX = pct.x;
-        this.mapY = pct.y;
-        this.updateMap()
+        this.currentPoseGraph = { x: locX, y: locY };
+        this.currentPoseSvg = this.graphToSvg(locX, locY);
+        this.currentPoseNodeId = this.findNearestNodeId(locX, locY);
+        this.updateMap();
       },
     );
 
@@ -152,22 +159,13 @@ export class MapComponent {
           this.mapX = centerPct.x;
           this.mapY = centerPct.y;
         }
-        this.updateMap();
-      },
-    );
 
-    this.globalPathSubscription = this.webSocketService.receiveGlobalPath().subscribe(
-      (message) => {
-        const payload = (message as any)?.value ?? message;
-        const points = payload?.points as any[] | undefined;
-        if (!points || points.length === 0) {
-          this.pathPoints = '';
-          return;
+        if (this.currentPoseGraph) {
+          this.currentPoseSvg = this.graphToSvg(this.currentPoseGraph.x, this.currentPoseGraph.y);
+          this.currentPoseNodeId = this.findNearestNodeId(this.currentPoseGraph.x, this.currentPoseGraph.y);
         }
-        this.pathPoints = points.map((pt) => {
-          const svg = this.graphToSvg(pt.x, pt.y);
-          return `${svg.x},${svg.y}`;
-        }).join(' ');
+
+        this.updateMap();
       },
     );
     this.webSocketService.sendMessageToFlask('{\"Name\": \"RequestMapNodes\", \"Value\": true}');
@@ -183,9 +181,6 @@ export class MapComponent {
     }
     if (this.mapNodesSubscription) {
       this.mapNodesSubscription.unsubscribe();
-    }
-    if (this.globalPathSubscription) {
-      this.globalPathSubscription.unsubscribe();
     }
   }
 
@@ -282,5 +277,26 @@ export class MapComponent {
       x: minX + ((x - this.graphBounds.min_x) / spanX) * fitSpanX,
       y: minY + (1 - ((y - this.graphBounds.min_y) / spanY)) * fitSpanY
     };
+  }
+
+  private findNearestNodeId(x: number, y: number): string | null {
+    if (this.graphNodes.length === 0) {
+      return null;
+    }
+
+    let nearestNodeId: string | null = null;
+    let nearestDistSq = Number.POSITIVE_INFINITY;
+
+    for (const node of this.graphNodes) {
+      const dx = node.x - x;
+      const dy = node.y - y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq < nearestDistSq) {
+        nearestDistSq = distSq;
+        nearestNodeId = node.id;
+      }
+    }
+
+    return nearestNodeId;
   }
 }
