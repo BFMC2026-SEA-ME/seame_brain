@@ -91,8 +91,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 .map-node {
     fill: rgba(255, 182, 0, 0.9);
-    stroke: rgba(0, 0, 0, 0.6);
-    stroke-width: 0.12;
+    stroke: none;
     pointer-events: none;
 }
 
@@ -101,8 +100,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 }
 
 .map-node.current {
-    stroke: rgba(55, 190, 255, 0.98);
-    stroke-width: 0.28;
+    stroke: none;
 }
 
 .map-current-pose {
@@ -115,12 +113,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 .map-node.checkpoint-pending {
     fill: rgba(255, 65, 65, 0.98);
-    stroke: rgba(0, 0, 0, 0.72);
+    stroke: none;
 }
 
 .map-node.checkpoint-passed {
     fill: rgba(40, 210, 90, 0.98);
-    stroke: rgba(0, 0, 0, 0.72);
+    stroke: none;
 }
 
 .map-node-hit {
