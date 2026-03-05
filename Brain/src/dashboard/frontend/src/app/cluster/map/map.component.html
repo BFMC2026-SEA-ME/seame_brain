@@ -39,25 +39,26 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
           [attr.cy]="currentPoseSvg.y"
           r="4"
         ></circle>
-        <g *ngFor="let node of graphNodes">
-          <circle
-            class="map-node-hit"
-            [attr.cx]="node.xSvg"
-            [attr.cy]="node.ySvg"
-            (click)="onSelectNode(node.id)"
-            r="8"
-          ></circle>
-          <circle
-            class="map-node"
-            [class.selected]="node.id === selectedNodeId && !isCheckpointNode(node.id)"
-            [class.current]="node.id === currentPoseNodeId"
-            [class.checkpoint-pending]="isCheckpointNode(node.id) && !isPassedCheckpointNode(node.id)"
-            [class.checkpoint-passed]="isCheckpointNode(node.id) && isPassedCheckpointNode(node.id)"
-            [attr.cx]="node.xSvg"
-            [attr.cy]="node.ySvg"
-            r="6"
-          ></circle>
-        </g>
+        <ng-container *ngFor="let node of graphNodes">
+          <g *ngIf="isCheckpointNode(node.id)">
+            <circle
+              class="map-node-hit"
+              [attr.cx]="node.xSvg"
+              [attr.cy]="node.ySvg"
+              (click)="onSelectNode(node.id)"
+              r="8"
+            ></circle>
+            <circle
+              class="map-node"
+              [class.current]="node.id === currentPoseNodeId"
+              [class.checkpoint-pending]="!isPassedCheckpointNode(node.id)"
+              [class.checkpoint-passed]="isPassedCheckpointNode(node.id)"
+              [attr.cx]="node.xSvg"
+              [attr.cy]="node.ySvg"
+              r="6"
+            ></circle>
+          </g>
+        </ng-container>
       </svg>
     </div>
 
