@@ -92,6 +92,11 @@ export class MapComponent {
   public selectedNodeId: string | null = null;
   public currentPoseSvg: { x: number; y: number } | null = null;
   public currentPoseNodeId: string | null = null;
+  public checkpointNodeIds: Set<string> = new Set([
+    '11', '25', '33', '39', '46', '60', '73', '76',
+    '156', '103', '130', '117', '140', '90', '81', '150'
+  ]);
+  public passedCheckpointNodeIds: Set<string> = new Set<string>();
 
   private graphBounds: { min_x: number; max_x: number; min_y: number; max_y: number } | null = null;
   private currentPoseGraph: { x: number; y: number } | null = null;
@@ -120,6 +125,7 @@ export class MapComponent {
         this.currentPoseGraph = { x: locX, y: locY };
         this.currentPoseSvg = this.graphToSvg(locX, locY);
         this.currentPoseNodeId = this.findNearestNodeId(locX, locY);
+        this.markCheckpointAsPassed(this.currentPoseNodeId);
         this.updateMap();
       },
     );
@@ -163,6 +169,7 @@ export class MapComponent {
         if (this.currentPoseGraph) {
           this.currentPoseSvg = this.graphToSvg(this.currentPoseGraph.x, this.currentPoseGraph.y);
           this.currentPoseNodeId = this.findNearestNodeId(this.currentPoseGraph.x, this.currentPoseGraph.y);
+          this.markCheckpointAsPassed(this.currentPoseNodeId);
         }
 
         this.updateMap();
@@ -298,5 +305,23 @@ export class MapComponent {
     }
 
     return nearestNodeId;
+  }
+
+  public isCheckpointNode(nodeId: string): boolean {
+    return this.checkpointNodeIds.has(String(nodeId));
+  }
+
+  public isPassedCheckpointNode(nodeId: string): boolean {
+    return this.passedCheckpointNodeIds.has(String(nodeId));
+  }
+
+  private markCheckpointAsPassed(nodeId: string | null): void {
+    if (!nodeId) {
+      return;
+    }
+    const key = String(nodeId);
+    if (this.checkpointNodeIds.has(key)) {
+      this.passedCheckpointNodeIds.add(key);
+    }
   }
 }
