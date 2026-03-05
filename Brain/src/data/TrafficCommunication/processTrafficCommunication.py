@@ -31,13 +31,19 @@ if __name__ == "__main__":
     sys.path.insert(0, "../../..")
 
 # Import necessary modules
+import json
 import math
+import os
+import socket
 import time
 from multiprocessing import Pipe
 from src.data.TrafficCommunication.useful.sharedMem import sharedMem
 from src.templates.workerprocess import WorkerProcess
 from src.templates.threadwithstop import ThreadWithStop
-from src.data.TrafficCommunication.threads.threadTrafficCommunication import threadTrafficCommunication
+try:
+    from src.data.TrafficCommunication.threads.threadTrafficCommunication import threadTrafficCommunication
+except Exception:
+    threadTrafficCommunication = None
 
 try:
     import rclpy
@@ -74,6 +80,15 @@ class threadTrafficDataCollector(ThreadWithStop):
         # [ADDED] Server upload payload is refreshed at 1 Hz.
         self._min_publish_period = 1.0  # seconds
         self._last_insert = {"devicePos": 0.0, "deviceRot": 0.0, "deviceSpeed": 0.0}
+        self._last_tcp_send = 0.0
+
+        # direct TCP sender (based on proven test script)
+        self._tcp_enabled = os.getenv("TRAFFIC_SIMPLE_TCP_ENABLE", "1").lower() in ("1", "true", "yes", "y")
+        self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.60")
+        self._tcp_port = int(os.getenv("TRAFFIC_TCP_PORT", "5000"))
+        self._tcp_send_speed = os.getenv("TRAFFIC_TCP_SEND_SPEED", "0").lower() in ("1", "true", "yes", "y")
+        self._sock = None
+        self._next_tcp_retry = 0.0
 
         self._ros_enabled = (
             rclpy is not None
@@ -88,8 +103,10 @@ class threadTrafficDataCollector(ThreadWithStop):
     def thread_work(self):
         self._spin_ros_once()
         self._flush_to_shared_memory()
+        self._flush_to_tcp()
 
     def stop(self):
+        self._close_tcp()
         self._close_ros()
         super(threadTrafficDataCollector, self).stop()
 
@@ -149,11 +166,12 @@ class threadTrafficDataCollector(ThreadWithStop):
     # [ADDED] Topic callbacks -> local cache.
     def _on_pos(self, msg):
         self.latest_pos = (float(msg.pose.position.x), float(msg.pose.position.y))
-        # [ADDED] Rotation is derived only from POS_TOPIC(/global_pose) quaternion.
+        # Use clockwise-positive yaw in [0, 360) to match external TCP test format.
         q = msg.pose.orientation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        self.latest_rot = math.degrees(math.atan2(siny_cosp, cosy_cosp))
+        yaw_deg_ccw = math.degrees(math.atan2(siny_cosp, cosy_cosp))
+        self.latest_rot = (-yaw_deg_ccw) % 360.0
 
     def _on_speed(self, msg):
         # /wheel_encoder vector.y is speed in m/s -> convert to cm/s.
@@ -173,6 +191,107 @@ class threadTrafficDataCollector(ThreadWithStop):
         if self.latest_speed is not None and (now - self._last_insert["deviceSpeed"]) >= self._min_publish_period:
             self.shared_memory.insert("deviceSpeed", [self.latest_speed])
             self._last_insert["deviceSpeed"] = now
+
+    def _close_tcp(self):
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+
+    def _connect_tcp_if_needed(self):
+        if not self._tcp_enabled:
+            return False
+        if self._sock is not None:
+            return True
+
+        now = time.monotonic()
+        if now < self._next_tcp_retry:
+            return False
+
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(3.0)
+            sock.connect((self._tcp_host, self._tcp_port))
+            sock.settimeout(None)
+            self._sock = sock
+            print(
+                f"\033[1;97m[ Traffic Communication ] :\033[0m "
+                f"\033[1;92mINFO\033[0m - Simple TCP connected to "
+                f"\033[94m{self._tcp_host}:{self._tcp_port}\033[0m"
+            )
+            return True
+        except Exception as exc:
+            self._close_tcp()
+            self._next_tcp_retry = now + 3.0
+            print(
+                f"\033[1;97m[ Traffic Communication ] :\033[0m "
+                f"\033[1;93mWARNING\033[0m - Simple TCP connect failed ({exc})"
+            )
+            return False
+
+    def _send_tcp_json(self, payload):
+        if self._sock is None:
+            return False
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        try:
+            self._sock.sendall(raw.encode("utf-8"))
+            return True
+        except Exception as exc:
+            print(
+                f"\033[1;97m[ Traffic Communication ] :\033[0m "
+                f"\033[1;93mWARNING\033[0m - Simple TCP send failed ({exc})"
+            )
+            self._close_tcp()
+            self._next_tcp_retry = time.monotonic() + 3.0
+            return False
+
+    def _flush_to_tcp(self):
+        if not self._tcp_enabled:
+            return
+        if self.latest_pos is None or self.latest_rot is None:
+            return
+
+        now = time.monotonic()
+        if (now - self._last_tcp_send) < self._min_publish_period:
+            return
+        if not self._connect_tcp_if_needed():
+            return
+
+        ok = self._send_tcp_json(
+            {
+                "reqORinfo": "info",
+                "type": "devicePos",
+                "value1": float(self.latest_pos[0]),
+                "value2": float(self.latest_pos[1]),
+            }
+        )
+        if not ok:
+            return
+
+        ok = self._send_tcp_json(
+            {
+                "reqORinfo": "info",
+                "type": "deviceRot",
+                "value1": round(float(self.latest_rot), 3),
+            }
+        )
+        if not ok:
+            return
+
+        if self._tcp_send_speed and self.latest_speed is not None:
+            ok = self._send_tcp_json(
+                {
+                    "reqORinfo": "info",
+                    "type": "deviceSpeed",
+                    "value1": float(self.latest_speed),
+                }
+            )
+            if not ok:
+                return
+
+        self._last_tcp_send = now
 
 ##########################################################
 
@@ -201,14 +320,23 @@ class processTrafficCommunication(WorkerProcess):
     def _init_threads(self):
         """Create the Traffic Communication thread and add it to the list of threads."""
 
-        TrafficComTh = threadTrafficCommunication(
-            self.shared_memory, self.queuesList, self.deviceID, self.frequency, self.filename
-        )
         TrafficDataCollectorTh = threadTrafficDataCollector(
             self.shared_memory, self.logging, self.debugging
         )
-        self.threads.append(TrafficComTh)
         self.threads.append(TrafficDataCollectorTh)
+
+        # Legacy BFMC traffic-com stack (UDP discovery + Twisted TCP) can be enabled explicitly.
+        legacy_enabled = os.getenv("TRAFFIC_LEGACY_ENABLE", "0").lower() in ("1", "true", "yes", "y")
+        if legacy_enabled and threadTrafficCommunication is not None:
+            TrafficComTh = threadTrafficCommunication(
+                self.shared_memory, self.queuesList, self.deviceID, self.frequency, self.filename
+            )
+            self.threads.append(TrafficComTh)
+        elif legacy_enabled and threadTrafficCommunication is None:
+            print(
+                f"\033[1;97m[ Traffic Communication ] :\033[0m "
+                f"\033[1;93mWARNING\033[0m - Legacy traffic thread unavailable (missing dependencies)"
+            )
 
 
 # =================================== EXAMPLE =========================================
@@ -217,6 +345,7 @@ class processTrafficCommunication(WorkerProcess):
 
 if __name__ == "__main__":
     from multiprocessing import Queue
+    import sys
     import time
 
     shared_memory = sharedMem()
@@ -231,6 +360,9 @@ if __name__ == "__main__":
     filename = "useful/publickey_server_test.pem"
     deviceID = 3
     frequency = 0.4
+    if threadTrafficCommunication is None:
+        print("[ Traffic Communication ] : Legacy example unavailable (missing Twisted).")
+        sys.exit(0)
     traffic_communication = threadTrafficCommunication(
         shared_memory, queueList, deviceID, frequency, filename
     )

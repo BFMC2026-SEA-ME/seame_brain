@@ -30,6 +30,8 @@ import numpy as np
 
 # Define a class for shared memory
 class sharedMem:
+    _EMPTY_VALUE = -99.9
+
     def __init__(self, mem_size=20):
         self.lock = Lock()  # Create a lock for thread synchronization
         
@@ -57,15 +59,19 @@ class sharedMem:
         for mem in self.shared_memory:
             with self.lock:  # Acquire the lock using get_lock()
                 mem["Command"] = "Command_"  # Default command string
-                mem["value1"] = -99.9  # Default value for first value
-                mem["value2"] = -99.9  # Default value for second value
-                mem["value3"] = -99.9  # Default value for third value
+                mem["value1"] = self._EMPTY_VALUE  # Default value for first value
+                mem["value2"] = self._EMPTY_VALUE  # Default value for second value
+                mem["value3"] = self._EMPTY_VALUE  # Default value for third value
                 mem["finishflag"] = False  # Default finish flag
 
     # Method to insert data into shared memory
     def insert(self, msg, values):
         with self.lock:  # Acquire the lock
             self.shared_memory[self.lastMem]["Command"] = msg  # Set the command string
+            # Reset all values first to avoid stale data from previous writes.
+            self.shared_memory[self.lastMem]["value1"] = self._EMPTY_VALUE
+            self.shared_memory[self.lastMem]["value2"] = self._EMPTY_VALUE
+            self.shared_memory[self.lastMem]["value3"] = self._EMPTY_VALUE
             if len(values) > 0:
                 self.shared_memory[self.lastMem]["value1"] = values[0]  # Set the first value
             if len(values) > 1:
@@ -84,11 +90,11 @@ class sharedMem:
             for mem in self.shared_memory:
                 if mem["finishflag"]:
                     msg = {"reqORinfo": "info", "type": mem["Command"]}  # Create a message dictionary
-                    if mem["value1"] != 99.9:
+                    if mem["value1"] != self._EMPTY_VALUE:
                         msg["value1"] = float(mem["value1"])  # Add the first value to the message
-                    if mem["value2"] != 99.9:
+                    if mem["value2"] != self._EMPTY_VALUE:
                         msg["value2"] = float(mem["value2"])  # Add the second value to the message
-                    if mem["value3"] != 99.9:
+                    if mem["value3"] != self._EMPTY_VALUE:
                         msg["value3"] = float(mem["value3"])  # Add the third value to the message
                     mem["finishflag"] = False  # Reset the finish flag
                     vals.append(msg)  # Append the message to the list of retrieved values
