@@ -69,7 +69,7 @@ class processTrafficCommunication(WorkerProcess):
 
 # =================================== EXAMPLE =========================================
 #             ++    THIS WILL RUN ONLY IF YOU RUN THE CODE FROM HERE  ++
-#                  in terminal:    python3 processTrafficCommunication.py
+#                  in terminal:    python3 processTrafficCommunication.pybb
 
 if __name__ == "__main__":
     from multiprocessing import Queue
