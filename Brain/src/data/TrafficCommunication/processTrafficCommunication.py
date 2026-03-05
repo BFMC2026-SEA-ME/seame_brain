@@ -83,7 +83,9 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._last_pose_for_speed = None  # (x, y, monotonic_s)
         self._use_pose_speed_fallback = os.getenv("TRAFFIC_SPEED_FALLBACK_POSE", "0").lower() in ("1", "true", "yes", "y")
         self._use_twist_speed_source = os.getenv("TRAFFIC_USE_WHEEL_TWIST_SPEED", "0").lower() in ("1", "true", "yes", "y")
-        self._speed_scale = float(os.getenv("TRAFFIC_SPEED_SCALE", "1.0"))
+        # /wheel_encoder vector.y is m/s; always convert to cm/s in code.
+        self._speed_scale = 100.0
+        self._verbose_log = os.getenv("TRAFFIC_VERBOSE_LOG", "0").lower() in ("1", "true", "yes", "y")
 
         # [ADDED] Server upload payload is refreshed at 1 Hz.
         self._min_publish_period = 1.0  # seconds
@@ -116,14 +118,14 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._last_speed_input_log = 0.0
         self._last_ros_match_log = 0.0
 
-        if not self._ros_enabled:
+        if self._verbose_log and not self._ros_enabled:
             print(
                 f"\033[1;97m[ Traffic Communication ] :\033[0m "
                 f"\033[1;93mWARNING\033[0m - ROS2 deps unavailable "
                 f"(rclpy/geometry_msgs missing). "
                 f"Pose-based traffic send is disabled."
             )
-        if self._tcp_enabled:
+        if self._verbose_log and self._tcp_enabled:
             bind_info = self._tcp_bind_ip if self._tcp_bind_ip else "auto"
             print(
                 f"\033[1;97m[ Traffic Communication ] :\033[0m "
@@ -143,9 +145,10 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._spin_ros_once()
         self._flush_to_shared_memory()
         self._flush_to_tcp()
-        self._log_waiting_pose()
-        self._log_waiting_speed()
-        self._log_ros_match_status()
+        if self._verbose_log:
+            self._log_waiting_pose()
+            self._log_waiting_speed()
+            self._log_ros_match_status()
 
     def stop(self):
         self._close_tcp()
@@ -192,11 +195,12 @@ class threadTrafficDataCollector(ThreadWithStop):
             subs = [self.POS_TOPIC, self.SPEED_TOPIC]
             if self._use_twist_speed_source:
                 subs.append(self.SPEED_TWIST_TOPIC)
-            print(
-                f"\033[1;97m[ Traffic Communication ] :\033[0m "
-                f"\033[1;92mINFO\033[0m - ROS subscribers active: "
-                + ", ".join(f"\033[94m{s}\033[0m" for s in subs)
-            )
+            if self._verbose_log:
+                print(
+                    f"\033[1;97m[ Traffic Communication ] :\033[0m "
+                    f"\033[1;92mINFO\033[0m - ROS subscribers active: "
+                    + ", ".join(f"\033[94m{s}\033[0m" for s in subs)
+                )
         except Exception as exc:
             print(f"\033[1;97m[ Traffic Communication ] :\033[0m \033[1;93mWARNING\033[0m - ROS topic listener init failed ({exc})")
             self._close_ros()
@@ -250,7 +254,8 @@ class threadTrafficDataCollector(ThreadWithStop):
         self.latest_speed = raw_vel * self._speed_scale
         self._last_speed_update = time.monotonic()
         self._speed_source = "wheel_encoder_y"
-        self._log_speed_input(msg.vector.x, msg.vector.y, msg.vector.z, self.latest_speed, self._speed_source)
+        if self._verbose_log:
+            self._log_speed_input(msg.vector.x, msg.vector.y, msg.vector.z, self.latest_speed, self._speed_source)
 
     def _on_speed_twist(self, msg):
         if not self._use_twist_speed_source:
@@ -384,7 +389,8 @@ class threadTrafficDataCollector(ThreadWithStop):
             )
             if not ok:
                 return
-            self._log_speed_sent(speed_value, speed_source)
+            if self._verbose_log:
+                self._log_speed_sent(speed_value, speed_source)
 
         self._last_tcp_send = now
 
