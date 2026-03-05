@@ -82,11 +82,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 }
 
 .map-frame {
-    fill: none;
-    stroke: rgba(255, 255, 255, 0.6);
-    stroke-width: 1.5;
-    vector-effect: non-scaling-stroke;
-    pointer-events: none;
+    display: none;
 }
 
 .map-node {

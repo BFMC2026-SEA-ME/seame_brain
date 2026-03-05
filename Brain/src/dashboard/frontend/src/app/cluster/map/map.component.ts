@@ -75,7 +75,7 @@ export class MapComponent {
   private readonly mapFitPaddingRatio = 0.06;
   // Expand node spacing around map center to better match track geometry.
   private readonly nodeSpreadScaleX = 1.07;
-  private readonly nodeSpreadScaleY = 1.02;
+  private readonly nodeSpreadScaleY = 1.01;
   // Fine vertical alignment (positive value moves nodes downward).
   private readonly nodeOffsetSvgY = 20.0;
 
