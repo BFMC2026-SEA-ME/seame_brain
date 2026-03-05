@@ -75,12 +75,12 @@ class SystemMode(Enum):
         },
         "semaphore": {
             "process": {
-                "enabled": False,
+                "enabled": True,
             }
         },
         "traffic_com": {
             "process": {
-                "enabled": False,
+                "enabled": True,
             }
         }
     }

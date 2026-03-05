@@ -653,7 +653,8 @@ class threadRead(ThreadWithStop):
                 msg, self.buffer = self.buffer.split(";;", 1)
                 if msg.strip():
                     try:
-                        self.send_queue(msg.strip())
+                        for single_msg in self._split_compound_messages(msg.strip()):
+                            self.send_queue(single_msg)
                     except Exception as e:
                         print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;91mERROR\033[0m - Processing message \033[94m{msg.strip()}\033[0m ({e})")
         except Exception as e:
@@ -669,6 +670,25 @@ class threadRead(ThreadWithStop):
         self._queue_timer = threading.Timer(1, self.queue_sending)
         self._queue_timer.daemon = True
         self._queue_timer.start()
+
+    def _split_compound_messages(self, buff):
+        """Split malformed frames like '@battery:79@imuenc:...' into valid messages."""
+        if not buff:
+            return []
+        if buff.count("@") <= 1:
+            return [buff]
+
+        starts = [m.start() for m in re.finditer(r"@[A-Za-z_][A-Za-z0-9_]*:", buff)]
+        if len(starts) <= 1 or starts[0] != 0:
+            return [buff]
+
+        chunks = []
+        for idx, start in enumerate(starts):
+            end = starts[idx + 1] if idx + 1 < len(starts) else len(buff)
+            chunk = buff[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+        return chunks or [buff]
 
     def send_queue(self, buff):
         if '@' in buff and ':' in buff:
@@ -776,7 +796,16 @@ class threadRead(ThreadWithStop):
 
             elif action == "battery":
                 if self.check_valid_value(action, value):
-                    percentage = (int(value) - 7000) / 14
+                    raw_value = value.strip()
+                    match = re.match(r"^-?\d+", raw_value)
+                    if match is None:
+                        if self.debugger:
+                            try:
+                                self.logger.warning(f"[SerialHandler] Invalid battery payload: {value}")
+                            except Exception:
+                                pass
+                        return
+                    percentage = (int(match.group(0)) - 7000) / 14
                     percentage = max(0, min(100, round(percentage)))
                     self.batteryLvlSender.send(percentage)
 
