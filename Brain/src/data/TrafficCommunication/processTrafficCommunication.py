@@ -49,7 +49,7 @@ try:
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-    from geometry_msgs.msg import PoseStamped, Vector3Stamped
+    from geometry_msgs.msg import PoseStamped, Vector3Stamped, TwistWithCovarianceStamped
 except Exception:
     rclpy = None
     Node = None
@@ -58,6 +58,7 @@ except Exception:
     QoSReliabilityPolicy = None
     PoseStamped = None
     Vector3Stamped = None
+    TwistWithCovarianceStamped = None
 
 
 class threadTrafficDataCollector(ThreadWithStop):
@@ -66,6 +67,7 @@ class threadTrafficDataCollector(ThreadWithStop):
     # [ADDED] TODO: topic names will be finalized later.
     POS_TOPIC = "/global_pose"             # expected type: geometry_msgs/PoseStamped
     SPEED_TOPIC = "/wheel_encoder"         # expected type: geometry_msgs/Vector3Stamped (y in m/s)
+    SPEED_TWIST_TOPIC = "/wheel_twist"     # expected type: geometry_msgs/TwistWithCovarianceStamped (linear.x in m/s)
 
     def __init__(self, shared_memory, logger=None, debugging=False):
         super(threadTrafficDataCollector, self).__init__(pause=0.05)
@@ -76,6 +78,11 @@ class threadTrafficDataCollector(ThreadWithStop):
         self.latest_pos = None
         self.latest_rot = None
         self.latest_speed = None
+        self._last_speed_update = 0.0
+        self._speed_source = None
+        self._last_pose_for_speed = None  # (x, y, monotonic_s)
+        self._last_encoder_distance = None
+        self._last_encoder_time = None
 
         # [ADDED] Server upload payload is refreshed at 1 Hz.
         self._min_publish_period = 1.0  # seconds
@@ -84,7 +91,7 @@ class threadTrafficDataCollector(ThreadWithStop):
 
         # direct TCP sender (based on proven test script)
         self._tcp_enabled = os.getenv("TRAFFIC_SIMPLE_TCP_ENABLE", "1").lower() in ("1", "true", "yes", "y")
-        self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.60")
+        self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.60") # 기훈이형 pc ip 
         self._tcp_port = int(os.getenv("TRAFFIC_TCP_PORT", "5000"))
         self._tcp_bind_ip = os.getenv("TRAFFIC_TCP_BIND_IP", "").strip()
         self._tcp_timeout = float(os.getenv("TRAFFIC_TCP_CONNECT_TIMEOUT", "3.0"))
@@ -103,6 +110,9 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._ros_initialized_here = False
         self._next_ros_retry = 0.0
         self._last_no_pose_log = 0.0
+        self._last_no_speed_log = 0.0
+        self._last_speed_send_log = 0.0
+        self._last_speed_input_log = 0.0
 
         if not self._ros_enabled:
             print(
@@ -125,6 +135,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._flush_to_shared_memory()
         self._flush_to_tcp()
         self._log_waiting_pose()
+        self._log_waiting_speed()
 
     def stop(self):
         self._close_tcp()
@@ -164,6 +175,17 @@ class threadTrafficDataCollector(ThreadWithStop):
             )
             self._ros_node.create_subscription(PoseStamped, self.POS_TOPIC, self._on_pos, sensor_qos)
             self._ros_node.create_subscription(Vector3Stamped, self.SPEED_TOPIC, self._on_speed, sensor_qos)
+            if TwistWithCovarianceStamped is not None:
+                self._ros_node.create_subscription(
+                    TwistWithCovarianceStamped, self.SPEED_TWIST_TOPIC, self._on_speed_twist, sensor_qos
+                )
+            print(
+                f"\033[1;97m[ Traffic Communication ] :\033[0m "
+                f"\033[1;92mINFO\033[0m - ROS subscribers active: "
+                f"\033[94m{self.POS_TOPIC}\033[0m, "
+                f"\033[94m{self.SPEED_TOPIC}\033[0m, "
+                f"\033[94m{self.SPEED_TWIST_TOPIC}\033[0m"
+            )
         except Exception as exc:
             print(f"\033[1;97m[ Traffic Communication ] :\033[0m \033[1;93mWARNING\033[0m - ROS topic listener init failed ({exc})")
             self._close_ros()
@@ -186,7 +208,9 @@ class threadTrafficDataCollector(ThreadWithStop):
 
     # [ADDED] Topic callbacks -> local cache.
     def _on_pos(self, msg):
-        self.latest_pos = (float(msg.pose.position.x), float(msg.pose.position.y))
+        x = float(msg.pose.position.x)
+        y = float(msg.pose.position.y)
+        self.latest_pos = (x, y)
         # Use clockwise-positive yaw in [0, 360) to match external TCP test format.
         q = msg.pose.orientation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
@@ -194,9 +218,47 @@ class threadTrafficDataCollector(ThreadWithStop):
         yaw_deg_ccw = math.degrees(math.atan2(siny_cosp, cosy_cosp))
         self.latest_rot = (-yaw_deg_ccw) % 360.0
 
+        # Fallback speed from pose delta (used when wheel speed topics are missing/stale).
+        now = time.monotonic()
+        if self._last_pose_for_speed is not None:
+            px, py, pt = self._last_pose_for_speed
+            dt = now - pt
+            if dt > 0.05:
+                dist_m = math.hypot(x - px, y - py)
+                pose_speed_cms = (dist_m / dt) * 100.0
+                if now - self._last_speed_update > 2.0:
+                    self.latest_speed = pose_speed_cms
+                    self._last_speed_update = now
+                    self._speed_source = "pose_fallback"
+        self._last_pose_for_speed = (x, y, now)
+
     def _on_speed(self, msg):
-        # /wheel_encoder vector.y is speed in m/s -> convert to cm/s.
-        self.latest_speed = float(msg.vector.y) * 100.0
+        # /wheel_encoder: x=rpm, y=velocity[m/s], z=distance (cumulative)
+        now = time.monotonic()
+        vel_mps = float(msg.vector.y)
+        dist = float(msg.vector.z)
+
+        source = "wheel_encoder"
+        # Some firmwares publish y as 0 while z still accumulates.
+        if abs(vel_mps) < 1e-6 and self._last_encoder_distance is not None and self._last_encoder_time is not None:
+            dt = now - self._last_encoder_time
+            if dt > 0.05:
+                vel_mps = (dist - self._last_encoder_distance) / dt
+                source = "wheel_encoder_distance"
+
+        self._last_encoder_distance = dist
+        self._last_encoder_time = now
+
+        self.latest_speed = vel_mps * 100.0
+        self._last_speed_update = time.monotonic()
+        self._speed_source = source
+        self._log_speed_input(msg.vector.x, msg.vector.y, msg.vector.z, self.latest_speed, source)
+
+    def _on_speed_twist(self, msg):
+        # /wheel_twist.twist.twist.linear.x is speed in m/s -> convert to cm/s.
+        self.latest_speed = float(msg.twist.twist.linear.x) * 100.0
+        self._last_speed_update = time.monotonic()
+        self._speed_source = "wheel_twist"
 
     def _flush_to_shared_memory(self):
         now = time.monotonic()
@@ -277,7 +339,9 @@ class threadTrafficDataCollector(ThreadWithStop):
     def _flush_to_tcp(self):
         if not self._tcp_enabled:
             return
-        if self.latest_pos is None or self.latest_rot is None:
+        has_pose_payload = self.latest_pos is not None and self.latest_rot is not None
+        has_speed_payload = self._tcp_send_speed and self.latest_speed is not None
+        if not has_pose_payload and not has_speed_payload:
             return
 
         now = time.monotonic()
@@ -286,37 +350,41 @@ class threadTrafficDataCollector(ThreadWithStop):
         if not self._connect_tcp_if_needed():
             return
 
-        ok = self._send_tcp_json(
-            {
-                "reqORinfo": "info",
-                "type": "devicePos",
-                "value1": float(self.latest_pos[0]),
-                "value2": float(self.latest_pos[1]),
-            }
-        )
-        if not ok:
-            return
-
-        ok = self._send_tcp_json(
-            {
-                "reqORinfo": "info",
-                "type": "deviceRot",
-                "value1": round(float(self.latest_rot), 3),
-            }
-        )
-        if not ok:
-            return
-
-        if self._tcp_send_speed and self.latest_speed is not None:
+        if has_pose_payload:
             ok = self._send_tcp_json(
                 {
                     "reqORinfo": "info",
-                    "type": "deviceSpeed",
-                    "value1": float(self.latest_speed),
+                    "type": "devicePos",
+                    "value1": float(self.latest_pos[0]),
+                    "value2": float(self.latest_pos[1]),
                 }
             )
             if not ok:
                 return
+
+            ok = self._send_tcp_json(
+                {
+                    "reqORinfo": "info",
+                    "type": "deviceRot",
+                    "value1": round(float(self.latest_rot), 3),
+                }
+            )
+            if not ok:
+                return
+
+        if has_speed_payload:
+            speed_value = float(self.latest_speed)
+            speed_source = self._speed_source if self._speed_source is not None else "unknown"
+            ok = self._send_tcp_json(
+                {
+                    "reqORinfo": "info",
+                    "type": "deviceSpeed",
+                    "value1": speed_value,
+                }
+            )
+            if not ok:
+                return
+            self._log_speed_sent(speed_value, speed_source)
 
         self._last_tcp_send = now
 
@@ -333,6 +401,44 @@ class threadTrafficDataCollector(ThreadWithStop):
             f"\033[1;97m[ Traffic Communication ] :\033[0m "
             f"\033[1;93mWARNING\033[0m - Waiting for pose topic "
             f"\033[94m{self.POS_TOPIC}\033[0m to publish PoseStamped"
+        )
+
+    def _log_waiting_speed(self):
+        if not self._tcp_enabled or not self._tcp_send_speed:
+            return
+        if self.latest_speed is not None:
+            return
+        now = time.monotonic()
+        if now - self._last_no_speed_log < 5.0:
+            return
+        self._last_no_speed_log = now
+        print(
+            f"\033[1;97m[ Traffic Communication ] :\033[0m "
+            f"\033[1;93mWARNING\033[0m - Waiting for speed topic "
+            f"\033[94m{self.SPEED_TOPIC}\033[0m or \033[94m{self.SPEED_TWIST_TOPIC}\033[0m"
+        )
+
+    def _log_speed_sent(self, value, source):
+        now = time.monotonic()
+        if now - self._last_speed_send_log < 3.0:
+            return
+        self._last_speed_send_log = now
+        print(
+            f"\033[1;97m[ Traffic Communication ] :\033[0m "
+            f"\033[1;92mINFO\033[0m - deviceSpeed sent "
+            f"\033[94m{value:.3f} cm/s\033[0m (source={source})"
+        )
+
+    def _log_speed_input(self, rpm, vel_raw, dist_raw, speed_cms, source):
+        now = time.monotonic()
+        if now - self._last_speed_input_log < 3.0:
+            return
+        self._last_speed_input_log = now
+        print(
+            f"\033[1;97m[ Traffic Communication ] :\033[0m "
+            f"\033[1;92mINFO\033[0m - wheel_encoder rx "
+            f"(rpm={float(rpm):.3f}, vel_y={float(vel_raw):.6f}, dist_z={float(dist_raw):.6f}) "
+            f"-> speed={float(speed_cms):.3f} cm/s (source={source})"
         )
 
     def _compute_tcp_route_diag(self):
