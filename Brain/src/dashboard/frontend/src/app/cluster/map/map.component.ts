@@ -96,7 +96,12 @@ export class MapComponent {
   public pathPoints: string = '';
   public selectedNodeId: string | null = null;
   public currentPoseSvg: { x: number; y: number } | null = null;
+  public currentPoseYawDeg: number = 0;
   public currentPoseNodeId: string | null = null;
+  // Change this path to use a different vehicle marker image.
+  public currentPoseImagePath: string = '/assets/Car_top.svg';
+  public currentPoseImageWidth: number = 20;
+  public currentPoseImageHeight: number = 14;
   public checkpointNodeIds: Set<string> = new Set([
     '11', '25', '33', '39', '46', '60', '73', '76',
     '156', '103', '130', '117', '140', '90', '81', '150'
@@ -124,6 +129,10 @@ export class MapComponent {
         const locY = Number(payload.y);
         if (!Number.isFinite(locX) || !Number.isFinite(locY)) {
           return;
+        }
+        const yaw = Number(payload.yaw);
+        if (Number.isFinite(yaw)) {
+          this.currentPoseYawDeg = (yaw * 180.0) / Math.PI;
         }
 
         this.hasLocation = true;

@@ -32,13 +32,20 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
       <svg #overlayElement id="map-track-overlay" viewBox="28 18 704 546" preserveAspectRatio="xMidYMid meet">
         <image href="/assets/lab_track.png" x="0" y="0" width="772" height="600" class="map-image" />
         <rect class="map-frame" x="28.5" y="18.5" width="703" height="545"></rect>
-        <circle
+        <g
           *ngIf="currentPoseSvg"
           class="map-current-pose"
-          [attr.cx]="currentPoseSvg.x"
-          [attr.cy]="currentPoseSvg.y"
-          r="4"
-        ></circle>
+          [attr.transform]="'translate(' + currentPoseSvg.x + ' ' + currentPoseSvg.y + ') rotate(' + currentPoseYawDeg + ')'"
+        >
+          <image
+            class="map-current-pose-image"
+            [attr.href]="currentPoseImagePath"
+            [attr.x]="-currentPoseImageWidth / 2"
+            [attr.y]="-currentPoseImageHeight / 2"
+            [attr.width]="currentPoseImageWidth"
+            [attr.height]="currentPoseImageHeight"
+          ></image>
+        </g>
         <ng-container *ngFor="let node of graphNodes">
           <g *ngIf="isCheckpointNode(node.id)">
             <circle

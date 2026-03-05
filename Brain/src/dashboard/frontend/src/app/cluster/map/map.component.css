@@ -100,10 +100,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 }
 
 .map-current-pose {
-    fill: rgba(55, 190, 255, 0.9);
-    stroke: rgba(255, 255, 255, 0.95);
-    stroke-width: 1.2;
-    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+}
+
+.map-current-pose-image {
     pointer-events: none;
 }
 
