@@ -81,9 +81,9 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._last_speed_update = 0.0
         self._speed_source = None
         self._last_pose_for_speed = None  # (x, y, monotonic_s)
-        self._last_encoder_distance = None
-        self._last_encoder_time = None
         self._use_pose_speed_fallback = os.getenv("TRAFFIC_SPEED_FALLBACK_POSE", "0").lower() in ("1", "true", "yes", "y")
+        self._use_twist_speed_source = os.getenv("TRAFFIC_USE_WHEEL_TWIST_SPEED", "0").lower() in ("1", "true", "yes", "y")
+        self._speed_scale = float(os.getenv("TRAFFIC_SPEED_SCALE", "1.0"))
 
         # [ADDED] Server upload payload is refreshed at 1 Hz.
         self._min_publish_period = 1.0  # seconds
@@ -135,7 +135,8 @@ class threadTrafficDataCollector(ThreadWithStop):
                 print(
                     f"\033[1;97m[ Traffic Communication ] :\033[0m "
                     f"\033[1;92mINFO\033[0m - Speed source policy "
-                    f"(wheel first, pose_fallback={self._use_pose_speed_fallback})"
+                    f"(wheel_y primary, pose_fallback={self._use_pose_speed_fallback}, "
+                    f"twist_enabled={self._use_twist_speed_source}, scale={self._speed_scale})"
                 )
 
     def thread_work(self):
@@ -184,16 +185,17 @@ class threadTrafficDataCollector(ThreadWithStop):
             )
             self._ros_node.create_subscription(PoseStamped, self.POS_TOPIC, self._on_pos, sensor_qos)
             self._ros_node.create_subscription(Vector3Stamped, self.SPEED_TOPIC, self._on_speed, sensor_qos)
-            if TwistWithCovarianceStamped is not None:
+            if self._use_twist_speed_source and TwistWithCovarianceStamped is not None:
                 self._ros_node.create_subscription(
                     TwistWithCovarianceStamped, self.SPEED_TWIST_TOPIC, self._on_speed_twist, sensor_qos
                 )
+            subs = [self.POS_TOPIC, self.SPEED_TOPIC]
+            if self._use_twist_speed_source:
+                subs.append(self.SPEED_TWIST_TOPIC)
             print(
                 f"\033[1;97m[ Traffic Communication ] :\033[0m "
                 f"\033[1;92mINFO\033[0m - ROS subscribers active: "
-                f"\033[94m{self.POS_TOPIC}\033[0m, "
-                f"\033[94m{self.SPEED_TOPIC}\033[0m, "
-                f"\033[94m{self.SPEED_TWIST_TOPIC}\033[0m"
+                + ", ".join(f"\033[94m{s}\033[0m" for s in subs)
             )
         except Exception as exc:
             print(f"\033[1;97m[ Traffic Communication ] :\033[0m \033[1;93mWARNING\033[0m - ROS topic listener init failed ({exc})")
@@ -243,30 +245,18 @@ class threadTrafficDataCollector(ThreadWithStop):
             self._last_pose_for_speed = (x, y, now)
 
     def _on_speed(self, msg):
-        # /wheel_encoder: x=rpm, y=velocity[m/s], z=distance (cumulative)
-        now = time.monotonic()
-        vel_mps = float(msg.vector.y)
-        dist = float(msg.vector.z)
-
-        source = "wheel_encoder"
-        # Some firmwares publish y as 0 while z still accumulates.
-        if abs(vel_mps) < 1e-6 and self._last_encoder_distance is not None and self._last_encoder_time is not None:
-            dt = now - self._last_encoder_time
-            if dt > 0.05:
-                vel_mps = (dist - self._last_encoder_distance) / dt
-                source = "wheel_encoder_distance"
-
-        self._last_encoder_distance = dist
-        self._last_encoder_time = now
-
-        self.latest_speed = vel_mps * 100.0
+        # Strict policy: use /wheel_encoder vector.y as the single source.
+        raw_vel = float(msg.vector.y)
+        self.latest_speed = raw_vel * self._speed_scale
         self._last_speed_update = time.monotonic()
-        self._speed_source = source
-        self._log_speed_input(msg.vector.x, msg.vector.y, msg.vector.z, self.latest_speed, source)
+        self._speed_source = "wheel_encoder_y"
+        self._log_speed_input(msg.vector.x, msg.vector.y, msg.vector.z, self.latest_speed, self._speed_source)
 
     def _on_speed_twist(self, msg):
-        # /wheel_twist.twist.twist.linear.x is speed in m/s -> convert to cm/s.
-        self.latest_speed = float(msg.twist.twist.linear.x) * 100.0
+        if not self._use_twist_speed_source:
+            return
+        # Optional source (disabled by default).
+        self.latest_speed = float(msg.twist.twist.linear.x) * self._speed_scale
         self._last_speed_update = time.monotonic()
         self._speed_source = "wheel_twist"
 
@@ -436,10 +426,10 @@ class threadTrafficDataCollector(ThreadWithStop):
         print(
             f"\033[1;97m[ Traffic Communication ] :\033[0m "
             f"\033[1;92mINFO\033[0m - deviceSpeed sent "
-            f"\033[94m{value:.3f} cm/s\033[0m (source={source})"
+            f"\033[94m{value:.6f}\033[0m (source={source}, scale={self._speed_scale})"
         )
 
-    def _log_speed_input(self, rpm, vel_raw, dist_raw, speed_cms, source):
+    def _log_speed_input(self, rpm, vel_raw, dist_raw, speed_value, source):
         now = time.monotonic()
         if now - self._last_speed_input_log < 3.0:
             return
@@ -448,7 +438,7 @@ class threadTrafficDataCollector(ThreadWithStop):
             f"\033[1;97m[ Traffic Communication ] :\033[0m "
             f"\033[1;92mINFO\033[0m - wheel_encoder rx "
             f"(rpm={float(rpm):.3f}, vel_y={float(vel_raw):.6f}, dist_z={float(dist_raw):.6f}) "
-            f"-> speed={float(speed_cms):.3f} cm/s (source={source})"
+            f"-> speed_out={float(speed_value):.6f} (source={source}, scale={self._speed_scale})"
         )
 
     def _log_ros_match_status(self):
