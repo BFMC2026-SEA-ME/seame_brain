@@ -172,6 +172,14 @@ class processDashboard(WorkerProcess):
         self.get_name_and_vals()
         self.messagesAndVals.pop("mainCamera", None)
         self.messagesAndVals.pop("Semaphores", None)
+        # These channels are not rendered in the current dashboard UI.
+        # Keep their internal queue flows available for other components, but
+        # avoid dashboard subscribe/emit overhead for them.
+        self.messagesAndVals.pop("ImuData", None)
+        self.messagesAndVals.pop("ImuAck", None)
+        self.messagesAndVals.pop("AliveSignal", None)
+        self.messagesAndVals.pop("CalibPWMData", None)
+        self.messagesAndVals.pop("CalibRunDone", None)
         self.subscribe()
     
 
