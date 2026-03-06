@@ -87,6 +87,7 @@ export class AppComponent implements OnDestroy {
   private currentSerialConnectionStateSubscription: Subscription | undefined;
   private roadSignSubscription: Subscription | undefined;
   private roadSignHideTimeout: any;
+  private shouldRestoreSession: boolean = false;
   @ViewChild(ClusterComponent) clusterComponent!: ClusterComponent;
   @ViewChild(TableComponent) tableComponent!: TableComponent;
   @ViewChild('stateSwitch') stateSwitchComponent!: StateSwitchComponent;
@@ -116,6 +117,7 @@ export class AppComponent implements OnDestroy {
       (message) => {
         if (message.data == true) {
           this.isAuthenticated = true;
+          this.shouldRestoreSession = true;
 
           // Request current states from backend upon successful login
           this.webSocketService.sendMessageToFlask(`{"Name": "GetCurrentSerialConnectionState"}`);
@@ -182,12 +184,15 @@ export class AppComponent implements OnDestroy {
     this.connectionStatusSubscription = this.webSocketService.connectionStatus$.subscribe(status => {
       if (status === 'disconnected' || status === 'error') {
         this.backendConnected = false;
-        this.isAuthenticated = false;
         this.startAutoReconnect();
 
       } else if (status === 'connected') {
         this.backendConnected = true;
         this.stopAutoReconnect();
+        if (this.shouldRestoreSession) {
+          this.webSocketService.sendMessageToFlask(`{"Name": "SessionAccess"}`);
+          this.webSocketService.sendMessageToFlask(`{"Name": "GetCurrentSerialConnectionState"}`);
+        }
 
         // if (!this.webSocketService.isConnected()) {
         //   this.webSocketService.reconnect();
@@ -228,6 +233,7 @@ export class AppComponent implements OnDestroy {
 
   logout() {
     this.isAuthenticated = false;
+    this.shouldRestoreSession = false;
     this.webSocketService.sendMessageToFlask(`{"Name": "SessionEnd"}`);
   }
 

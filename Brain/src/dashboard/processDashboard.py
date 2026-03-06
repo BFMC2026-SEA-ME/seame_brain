@@ -157,7 +157,7 @@ class processDashboard(WorkerProcess):
             cors_allowed_origins="*",
             async_mode='eventlet',
             ping_interval=25,
-            ping_timeout=60,
+            ping_timeout=120,
         )
         CORS(self.app, supports_credentials=True)
 

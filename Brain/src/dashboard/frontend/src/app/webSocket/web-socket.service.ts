@@ -91,8 +91,15 @@ export class WebSocketService {
     }
 
     this.webSocket = new Socket({
-    url: backendUrl,
-    options: {},
+      url: backendUrl,
+      options: {
+        reconnection: true,
+        reconnectionAttempts: 1000000,
+        reconnectionDelay: 500,
+        reconnectionDelayMax: 2000,
+        timeout: 20000,
+        transports: ['websocket', 'polling'],
+      },
     });
     // 카메라 프레임을 ArrayBuffer로 받도록 설정
     this.webSocket.ioSocket.binaryType = 'arraybuffer';

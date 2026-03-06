@@ -28,7 +28,6 @@
 
 from src.templates.threadwithstop import ThreadWithStop
 import time
-import os
 from queue import Empty
 
 class threadGateway(ThreadWithStop):
@@ -62,11 +61,6 @@ class threadGateway(ThreadWithStop):
         Id = message["msgID"]
         To = message["To"]["receiver"]
         Pipe = message["To"]["pipe"]
-        try:
-            os.set_blocking(Pipe.fileno(), False)
-        except Exception:
-            # Best effort: if this fails we keep legacy blocking behavior.
-            pass
         if not Owner in self.sendingList.keys():
             self.sendingList[Owner] = {}
         if not Id in self.sendingList[Owner].keys():
@@ -90,9 +84,20 @@ class threadGateway(ThreadWithStop):
         Id = message["msgID"]
         To = message["To"]["receiver"]
 
-        # We delete the value from Dictionary
-        del self.sendingList[Owner][Id][To]
-        self.messageApproved.remove((Owner, Id))
+        # Tolerate duplicated/unordered unsubscribe events.
+        owner_dict = self.sendingList.get(Owner)
+        if owner_dict is not None:
+            id_dict = owner_dict.get(Id)
+            if id_dict is not None and To in id_dict:
+                del id_dict[To]
+                if not id_dict:
+                    del owner_dict[Id]
+                if not owner_dict:
+                    del self.sendingList[Owner]
+
+        key = (Owner, Id)
+        if key in self.messageApproved:
+            self.messageApproved.remove(key)
         if self.debugging:
             self.print_list()
 
@@ -116,25 +121,22 @@ class threadGateway(ThreadWithStop):
                     pipe.send({"Type": Type, "value": Value, "id": Id, "Owner": Owner})
                     if self.debugging:
                         self.logger.warning(message)
-                except (BrokenPipeError, EOFError, ConnectionResetError) as error:
+                except (BrokenPipeError, EOFError, OSError, ConnectionResetError) as error:
                     to_remove.append(element)
                     if self.debugging:
                         self.logger.warning("Dropping dead pipe for %s/%s/%s: %r", Owner, Id, element, error)
-                except BlockingIOError:
-                    # Slow subscriber: drop this frame instead of stalling the gateway.
-                    if self.debugging:
-                        self.logger.warning("Dropping blocked pipe frame for %s/%s/%s", Owner, Id, element)
-                except OSError as error:
-                    # Non-blocking EAGAIN/EWOULDBLOCK: drop frame; other OSErrors remove pipe.
-                    if getattr(error, "errno", None) in (11, 35):
-                        if self.debugging:
-                            self.logger.warning("Dropping EAGAIN pipe frame for %s/%s/%s", Owner, Id, element)
-                    else:
-                        to_remove.append(element)
-                        if self.debugging:
-                            self.logger.warning("Dropping dead pipe for %s/%s/%s: %r", Owner, Id, element, error)
             for element in to_remove:
-                del self.sendingList[Owner][Id][element]
+                owner_dict = self.sendingList.get(Owner)
+                if owner_dict is None:
+                    continue
+                id_dict = owner_dict.get(Id)
+                if id_dict is None or element not in id_dict:
+                    continue
+                del id_dict[element]
+                if not id_dict:
+                    del owner_dict[Id]
+                if not owner_dict:
+                    del self.sendingList[Owner]
 
     # ====================================================================================
 
@@ -184,11 +186,19 @@ class threadGateway(ThreadWithStop):
             if latest_image is not None:
                 self.send(latest_image)
         if not self.queuesList["Config"].empty():
-            message2 = self.queuesList["Config"].get()
-            if str.lower(message2["Subscribe/Unsubscribe"]) == "subscribe":
-                self.subscribe(message2)
-            else:
-                self.unsubscribe(message2)
+            try:
+                message2 = self.queuesList["Config"].get_nowait()
+            except Empty:
+                message2 = None
+            if message2 is not None:
+                try:
+                    if str.lower(message2["Subscribe/Unsubscribe"]) == "subscribe":
+                        self.subscribe(message2)
+                    else:
+                        self.unsubscribe(message2)
+                except Exception as exc:
+                    if self.debugging:
+                        self.logger.warning("Config routing failed: %r", exc)
 
         # print(time.perf_counter_ns())
 
