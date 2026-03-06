@@ -584,7 +584,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         # UDP stream payload example:
         # {"device":"semaphore","id":0,"state":"red","x":1,"y":1}
         device = str(payload.get("device", "")).strip().lower()
-        if device == "semaphore":
+        if device == "semaphore" or ("state" in payload and device in ("", "semaphore")):
             if self._udp_semaphore_id_filter is not None:
                 try:
                     sem_id = int(payload.get("id"))
