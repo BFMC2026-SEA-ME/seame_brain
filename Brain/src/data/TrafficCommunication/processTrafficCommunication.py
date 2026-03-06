@@ -34,6 +34,7 @@ if __name__ == "__main__":
 import json
 import math
 import os
+import select
 import socket
 import time
 from multiprocessing import Pipe
@@ -50,6 +51,7 @@ try:
     from rclpy.node import Node
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from geometry_msgs.msg import PoseStamped, Vector3Stamped, TwistWithCovarianceStamped
+    from std_msgs.msg import Int32
 except Exception:
     rclpy = None
     Node = None
@@ -59,6 +61,7 @@ except Exception:
     PoseStamped = None
     Vector3Stamped = None
     TwistWithCovarianceStamped = None
+    Int32 = None
 
 
 class threadTrafficDataCollector(ThreadWithStop):
@@ -100,8 +103,11 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._tcp_timeout = float(os.getenv("TRAFFIC_TCP_CONNECT_TIMEOUT", "3.0"))
         self._tcp_send_speed = os.getenv("TRAFFIC_TCP_SEND_SPEED", "1").lower() in ("1", "true", "yes", "y")
         self._sock = None
+        self._tcp_rx_buffer = ""
         self._next_tcp_retry = 0.0
         self._last_tcp_diag_log = 0.0
+        self._traffic_color_topic = os.getenv("TRAFFIC_COLOR_TOPIC", "/traffic_color")
+        self._traffic_color_pub = None
 
         self._ros_enabled = (
             rclpy is not None
@@ -141,6 +147,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._spin_ros_once()
         self._flush_to_shared_memory()
         self._flush_to_tcp()
+        self._poll_tcp_rx()
         if self._verbose_log:
             self._log_waiting_pose()
             self._log_waiting_speed()
@@ -187,6 +194,10 @@ class threadTrafficDataCollector(ThreadWithStop):
                 self._ros_node.create_subscription(
                     TwistWithCovarianceStamped, self.SPEED_TWIST_TOPIC, self._on_speed_twist, sensor_qos
                 )
+            if Int32 is not None:
+                self._traffic_color_pub = self._ros_node.create_publisher(
+                    Int32, self._traffic_color_topic, 10
+                )
             subs = [self.POS_TOPIC, self.SPEED_TOPIC]
             if self._use_twist_speed_source:
                 subs.append(self.SPEED_TWIST_TOPIC)
@@ -207,6 +218,7 @@ class threadTrafficDataCollector(ThreadWithStop):
             except Exception:
                 pass
             self._ros_node = None
+            self._traffic_color_pub = None
 
         if self._ros_initialized_here and rclpy is not None and rclpy.ok():
             try:
@@ -281,6 +293,7 @@ class threadTrafficDataCollector(ThreadWithStop):
             except Exception:
                 pass
             self._sock = None
+        self._tcp_rx_buffer = ""
 
     def _connect_tcp_if_needed(self):
         if not self._tcp_enabled:
@@ -375,6 +388,130 @@ class threadTrafficDataCollector(ThreadWithStop):
                 self._log_speed_sent(speed_value, speed_source)
 
         self._last_tcp_send = now
+
+    def _poll_tcp_rx(self):
+        if not self._tcp_enabled:
+            return
+        if self._sock is None:
+            self._connect_tcp_if_needed()
+            return
+
+        while True:
+            try:
+                readable, _, _ = select.select([self._sock], [], [], 0.0)
+            except Exception:
+                self._close_tcp()
+                self._next_tcp_retry = time.monotonic() + 3.0
+                return
+
+            if not readable:
+                break
+
+            try:
+                chunk = self._sock.recv(4096)
+            except BlockingIOError:
+                break
+            except Exception:
+                self._close_tcp()
+                self._next_tcp_retry = time.monotonic() + 3.0
+                return
+
+            if not chunk:
+                self._close_tcp()
+                self._next_tcp_retry = time.monotonic() + 3.0
+                return
+
+            self._tcp_rx_buffer += chunk.decode("utf-8", errors="ignore")
+
+        self._consume_tcp_rx_buffer()
+
+    def _consume_tcp_rx_buffer(self):
+        if not self._tcp_rx_buffer:
+            return
+
+        decoder = json.JSONDecoder()
+        while True:
+            self._tcp_rx_buffer = self._tcp_rx_buffer.lstrip()
+            if not self._tcp_rx_buffer:
+                return
+
+            if self._tcp_rx_buffer[0] not in "{[":
+                next_start = min(
+                    [idx for idx in (self._tcp_rx_buffer.find("{"), self._tcp_rx_buffer.find("[")) if idx >= 0],
+                    default=-1,
+                )
+                if next_start == -1:
+                    self._tcp_rx_buffer = ""
+                    return
+                self._tcp_rx_buffer = self._tcp_rx_buffer[next_start:]
+                continue
+
+            try:
+                payload, end_idx = decoder.raw_decode(self._tcp_rx_buffer)
+            except ValueError:
+                # Partial JSON frame: keep buffer and wait next recv.
+                return
+
+            self._tcp_rx_buffer = self._tcp_rx_buffer[end_idx:]
+            self._handle_tcp_payload(payload)
+
+    def _handle_tcp_payload(self, payload):
+        color_value = self._extract_traffic_color(payload)
+        if color_value is None:
+            return
+        self._publish_traffic_color(color_value)
+
+    def _extract_traffic_color(self, payload):
+        if not isinstance(payload, dict):
+            return None
+
+        msg_type = str(payload.get("type", "")).strip().lower()
+        raw_value = None
+
+        for key in ("traffic_color", "trafficColor"):
+            if key in payload:
+                raw_value = payload[key]
+                break
+
+        if raw_value is None and msg_type in ("traffic_color", "trafficcolor", "traffic_light", "trafficlight"):
+            for key in ("value", "value1", "color", "state"):
+                if key in payload:
+                    raw_value = payload[key]
+                    break
+
+        if raw_value is None:
+            return None
+
+        return self._coerce_traffic_color(raw_value)
+
+    def _coerce_traffic_color(self, raw_value):
+        if isinstance(raw_value, bool):
+            return int(raw_value)
+        if isinstance(raw_value, (int, float)):
+            return int(raw_value)
+        if isinstance(raw_value, str):
+            value = raw_value.strip().lower()
+            text_map = {
+                "red": 0,
+                "yellow": 1,
+                "amber": 1,
+                "green": 2,
+                "off": 3,
+            }
+            if value in text_map:
+                return text_map[value]
+            try:
+                return int(float(value))
+            except ValueError:
+                return None
+        return None
+
+    def _publish_traffic_color(self, color_value):
+        if self._ros_node is None or self._traffic_color_pub is None or Int32 is None:
+            return
+        msg = Int32()
+        msg.data = int(color_value)
+        self._traffic_color_pub.publish(msg)
 
     def _log_waiting_pose(self):
         if not self._tcp_enabled:

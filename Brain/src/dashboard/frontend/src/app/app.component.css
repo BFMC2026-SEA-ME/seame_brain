@@ -152,7 +152,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 .team-logo {
   position: absolute;
-  top: clamp(6px, 1vw, 14px);
+  top: clamp(14px, 2vw, 22px);
   left: clamp(6px, 1vw, 14px);
   height: clamp(36px, calc(var(--cluster-width) * 0.06), 68px);
   width: auto;
