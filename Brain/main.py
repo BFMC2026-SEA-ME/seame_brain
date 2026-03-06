@@ -270,6 +270,12 @@ try:
             modeDictSemaphore = SystemMode[message].value["semaphore"]["process"]
             modeDictTrafficCom = SystemMode[message].value["traffic_com"]["process"]
 
+            # Safety guard: AUTO mode must always keep semaphore + traffic communication alive
+            # so `/traffic_color` publishing does not stop due to mode config drift.
+            if str(message).upper() == "AUTO":
+                modeDictSemaphore["enabled"] = True
+                modeDictTrafficCom["enabled"] = True
+
             processSemaphore = manage_process_life(processSemaphores, processSemaphore, [queueList, logging, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
             processTrafficCom = manage_process_life(processTrafficCommunication, processTrafficCom, [queueList, logging, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
 
