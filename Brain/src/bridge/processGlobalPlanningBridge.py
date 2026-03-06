@@ -191,7 +191,7 @@ class GlobalPlanningBridgeNode(Node):
         self._last_pose_send = 0.0
         self._pose_send_period = 0.1  # 10 Hz
         self._last_sign_send = 0.0
-        self._sign_send_period = float(os.environ.get("ROAD_SIGN_SEND_PERIOD", "0.1"))
+        self._sign_send_period = float(os.environ.get("ROAD_SIGN_SEND_PERIOD", "0.2"))
         self._enable_path_stream = str(os.environ.get("DASHBOARD_ENABLE_GLOBAL_PATH", "0")).lower() in (
             "1",
             "true",

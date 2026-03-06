@@ -141,8 +141,9 @@ class processDashboard(WorkerProcess):
         self._latest_semaphores = {}
         self._pending_semaphore_ids = set()
         self._last_semaphore_emit = 0.0
-        self._semaphore_emit_period_s = float(os.getenv("DASHBOARD_SEMAPHORE_EMIT_PERIOD", "0.2"))
-        self._semaphore_drain_limit = int(os.getenv("DASHBOARD_SEMAPHORE_DRAIN_LIMIT", "256"))
+        self._semaphore_emit_period_s = float(os.getenv("DASHBOARD_SEMAPHORE_EMIT_PERIOD", "0.25"))
+        self._semaphore_drain_limit = int(os.getenv("DASHBOARD_SEMAPHORE_DRAIN_LIMIT", "64"))
+        self._no_ack_message_names = {"SteerMotor", "SpeedMotor", "Brake", "Control"}
 
         # configuration
         self.table_state_file = self._get_table_state_path()
@@ -288,10 +289,11 @@ class processDashboard(WorkerProcess):
             else:
                 self.send_message_to_brain(dataName, dataDict)
 
-            try:
-                self.socketio.emit('response', {'data': 'Message received: ' + str(data)}, room=socketId) # type: ignore
-            except Exception as exc:
-                self.logger.error(f"Failed to emit response: {exc}")
+            if dataName not in self._no_ack_message_names:
+                try:
+                    self.socketio.emit('response', {'data': 'Message received: ' + str(data)}, room=socketId) # type: ignore
+                except Exception as exc:
+                    self.logger.error(f"Failed to emit response: {exc}")
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse JSON message: {e}")
             self.socketio.emit('response', {'error': 'Invalid JSON format'}, room=socketId) # type: ignore
