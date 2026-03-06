@@ -79,7 +79,6 @@ class threadTrafficDataCollector(ThreadWithStop):
     POS_TOPIC = "/global_pose"             # expected type: geometry_msgs/PoseStamped
     SPEED_TOPIC = "/wheel_encoder"         # expected type: geometry_msgs/Vector3Stamped (y in m/s)
     SPEED_TWIST_TOPIC = "/wheel_twist"     # expected type: geometry_msgs/TwistWithCovarianceStamped (linear.x in m/s)
-    HISTORY_TOPIC = "/obstacle_roi/event_xy"   # expected type: std_msgs/String ("class_name,x,y")
 
     def __init__(self, shared_memory, queues_list=None, logger=None, debugging=False):
         super(threadTrafficDataCollector, self).__init__(pause=0.05)
@@ -91,11 +90,6 @@ class threadTrafficDataCollector(ThreadWithStop):
         self.latest_pos = None
         self.latest_rot = None
         self.latest_speed = None
-        # [ADDED][historyData] last parsed event payload as (event_id, x, y)
-        self.latest_history = None
-        self._history_update_seq = 0
-        self._last_shared_history_seq = 0
-        self._last_tcp_history_seq = 0
         self._last_speed_update = 0.0
         self._speed_source = None
         self._last_pose_for_speed = None  # (x, y, monotonic_s)
@@ -104,34 +98,10 @@ class threadTrafficDataCollector(ThreadWithStop):
         # /wheel_encoder vector.y is m/s; always convert to cm/s in code.
         self._speed_scale = 100.0
         self._verbose_log = os.getenv("TRAFFIC_VERBOSE_LOG", "0").lower() in ("1", "true", "yes", "y")
-        # [ADDED][historyData] allow topic override while keeping requested default.
-        self._history_topic = os.getenv("TRAFFIC_HISTORY_TOPIC", self.HISTORY_TOPIC)
-        # [ADDED][historyData] deterministic class->event_id mapping (requested table).
-        self._history_class_to_id = {
-            "STOP": 1,
-            "PRIORITY": 2,
-            "PARKING": 3,
-            "CROSSWALK": 4,
-            "HIGHWAYENTRANCE": 5,
-            "HIGHWAYEXIT": 6,
-            "ROUNDABOUT": 7,
-            "ONEWAYROAD": 8,
-            "NOENTRY": 9,
-            "STATICCARONPARKING": 10,
-            "PEDESTRIAN": 11,
-            "PEDESTRIANONROAD": 12,
-            "ROADBLOCK": 13,
-            "TRAFFICLIGHT": 14,
-            "FOG": 15,
-            "TUNNEL": 16,
-            "RAMP": 17,
-        }
-        self._history_label_to_id = {}
-        self._history_next_label_id = int(max(self._history_class_to_id.values(), default=0) + 1)
 
         # [ADDED] Server upload payload is refreshed at 1 Hz.
         self._min_publish_period = 1.0  # seconds
-        self._last_insert = {"devicePos": 0.0, "deviceRot": 0.0, "deviceSpeed": 0.0, "historyData": 0.0}
+        self._last_insert = {"devicePos": 0.0, "deviceRot": 0.0, "deviceSpeed": 0.0}
         self._last_tcp_send = 0.0
 
         # direct TCP sender (based on proven test script)
@@ -285,10 +255,6 @@ class threadTrafficDataCollector(ThreadWithStop):
                     TwistWithCovarianceStamped, self.SPEED_TWIST_TOPIC, self._on_speed_twist, sensor_qos
                 )
             if StringMsg is not None:
-                # [ADDED][historyData] subscribe obstacle event topic for historyData payloads.
-                self._ros_node.create_subscription(
-                    StringMsg, self._history_topic, self._on_history_event_xy, sensor_qos
-                )
                 self._traffic_color_pub = self._ros_node.create_publisher(
                     StringMsg, self._traffic_color_topic, 10
                 )
@@ -303,8 +269,6 @@ class threadTrafficDataCollector(ThreadWithStop):
             subs = [self.POS_TOPIC, self.SPEED_TOPIC]
             if self._use_twist_speed_source:
                 subs.append(self.SPEED_TWIST_TOPIC)
-            if StringMsg is not None:
-                subs.append(self._history_topic)
             if self._verbose_log:
                 print(
                     f"\033[1;97m[ Traffic Communication ] :\033[0m "
@@ -377,205 +341,6 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._last_speed_update = time.monotonic()
         self._speed_source = "wheel_twist"
 
-    # [ADDED][historyData] parse /obstacle/event_xy payload and cache one-shot history tuple.
-    def _on_history_event_xy(self, msg):
-        parsed = self._parse_history_event_xy(msg.data)
-        if parsed is None:
-            return
-        self.latest_history = parsed
-        self._history_update_seq += 1
-
-    # [ADDED][historyData] supported inputs:
-    # - CSV text: "class_name,x,y" (e.g. "PEDESTRIAN,1.390,0.814")
-    # - JSON dict: {"x":..., "y":..., "event_id"/"id"/"class_id"/...}
-    # - JSON list: [x, y, event]
-    # - plain text: "x,y,event", "x y event", "class x y"
-    # - return tuple order: (event_id:int, x:float, y:float)
-    def _parse_history_event_xy(self, raw):
-        text = str(raw or "").strip()
-        if not text:
-            return None
-
-        payload = text
-        try:
-            payload = json.loads(text)
-        except Exception:
-            payload = text
-
-        if isinstance(payload, dict):
-            x = self._pick_history_float(payload, ("x", "value1", "cx", "center_x"))
-            y = self._pick_history_float(payload, ("y", "value2", "cy", "center_y"))
-            event = self._pick_history_event(
-                payload,
-                ("event_id", "id", "class_id", "value3", "event", "class_name", "class", "type", "label", "name"),
-            )
-            if x is None or y is None:
-                return None
-            if event is None:
-                event = 0
-            return (event, x, y)
-
-        if isinstance(payload, (list, tuple)):
-            if len(payload) < 2:
-                return None
-            first_num = self._coerce_history_float(payload[0])
-            if len(payload) >= 3 and first_num is None:
-                cls_event = self._coerce_history_event(payload[0])
-                x2 = self._coerce_history_float(payload[1])
-                y2 = self._coerce_history_float(payload[2])
-                if cls_event is not None and x2 is not None and y2 is not None:
-                    return (cls_event, x2, y2)
-            x = self._coerce_history_float(payload[0])
-            y = self._coerce_history_float(payload[1])
-            if x is None or y is None:
-                return None
-            event = self._coerce_history_event(payload[2]) if len(payload) > 2 else 0
-            if event is None:
-                event = 0
-            return (event, x, y)
-
-        tokens = [t.strip() for t in text.replace(";", ",").replace("|", ",").split(",") if t.strip()]
-        if len(tokens) < 2:
-            tokens = [t for t in text.split() if t]
-        if len(tokens) < 2:
-            return None
-
-        # [ADDED][historyData] Ignore header line printed/forwarded as "class_name,x,y".
-        header_tokens = [self._normalize_history_label(tok) for tok in tokens[:3]]
-        if len(header_tokens) >= 3 and header_tokens[0] in ("CLASSNAME", "CLASS") and header_tokens[1] == "X" and header_tokens[2] == "Y":
-            return None
-
-        # Preferred runtime format: "CLASS_NAME,x,y"
-        token0_num = self._coerce_history_float(tokens[0])
-        if len(tokens) >= 3 and token0_num is None:
-            cls_event = self._coerce_history_event(tokens[0])
-            x2 = self._coerce_history_float(tokens[1])
-            y2 = self._coerce_history_float(tokens[2])
-            if cls_event is not None and x2 is not None and y2 is not None:
-                return (cls_event, x2, y2)
-
-        # Backward-compat format: "x,y,event"
-        x = self._coerce_history_float(tokens[0])
-        y = self._coerce_history_float(tokens[1])
-        if x is not None and y is not None:
-            event = self._coerce_history_event(tokens[2]) if len(tokens) > 2 else 0
-            if event is None:
-                event = 0
-            return (event, x, y)
-
-        # Fallback: first label + first two numeric tokens (e.g. "PEDESTRIAN score x y").
-        label = None
-        numeric_vals = []
-        for token in tokens:
-            v = self._coerce_history_float(token)
-            if v is not None:
-                numeric_vals.append(v)
-                continue
-            if label is None:
-                label = token
-        if label is not None and len(numeric_vals) >= 2:
-            event = self._coerce_history_event(label)
-            if event is None:
-                return None
-            return (event, numeric_vals[0], numeric_vals[1])
-        return None
-
-    # [ADDED][historyData] utility: choose first numeric value from a dict key list.
-    def _pick_history_float(self, payload, keys):
-        for key in keys:
-            if key in payload:
-                value = self._coerce_history_float(payload.get(key))
-                if value is not None:
-                    return value
-        return None
-
-    # [ADDED][historyData] utility: choose first valid event code from a dict key list.
-    def _pick_history_event(self, payload, keys):
-        for key in keys:
-            if key in payload:
-                value = self._coerce_history_event(payload.get(key))
-                if value is not None:
-                    return value
-        return None
-
-    # [ADDED][historyData] coerce numeric x/y values.
-    def _coerce_history_float(self, raw):
-        try:
-            return float(raw)
-        except Exception:
-            return None
-
-    # [ADDED][historyData] event value can be numeric or label text.
-    # Label text is mapped to stable runtime IDs (1, 2, 3, ...).
-    def _coerce_history_event(self, raw):
-        if raw is None:
-            return None
-        if isinstance(raw, bool):
-            return int(raw)
-        if isinstance(raw, (int, float)):
-            return int(raw)
-
-        text = str(raw).strip()
-        if not text:
-            return None
-        try:
-            return int(float(text))
-        except ValueError:
-            normalized = self._normalize_history_label(text)
-            if not normalized or normalized in ("CLASSNAME", "CLASS"):
-                return None
-
-            # Keep sign class mapping aligned with global-planning aliases.
-            canonical = self._canonical_history_class(normalized)
-            if canonical is not None and canonical in self._history_class_to_id:
-                return self._history_class_to_id[canonical]
-
-            if normalized not in self._history_label_to_id:
-                self._history_label_to_id[normalized] = int(self._history_next_label_id)
-                self._history_next_label_id += 1
-            return self._history_label_to_id[normalized]
-
-    # [ADDED][historyData] Normalize labels: "pedestrian", "PEDESTRIAN", "pedestrian-1" -> comparable keys.
-    def _normalize_history_label(self, raw):
-        return "".join(ch for ch in str(raw).strip().upper() if ch.isalnum())
-
-    # [ADDED][historyData] Canonicalize common aliases before class->event_id lookup.
-    def _canonical_history_class(self, normalized):
-        if "HIGHWAY" in normalized:
-            if any(token in normalized for token in ("ENTRANCE", "ENTRY", "IN")):
-                return "HIGHWAYENTRANCE"
-            if any(token in normalized for token in ("EXIT", "OUT")):
-                return "HIGHWAYEXIT"
-        alias_map = {
-            "STOP": "STOP",
-            "STOPSIGN": "STOP",
-            "PRIORITY": "PRIORITY",
-            "PARKING": "PARKING",
-            "PARK": "PARKING",
-            "CROSSWALK": "CROSSWALK",
-            "HIGHWAYENTRANCE": "HIGHWAYENTRANCE",
-            "HIGHWAYEXIT": "HIGHWAYEXIT",
-            "ROUNDABOUT": "ROUNDABOUT",
-            "ONEWAYROAD": "ONEWAYROAD",
-            "ONEWAY": "ONEWAYROAD",
-            "NOENTRY": "NOENTRY",
-            "DONOTENTER": "NOENTRY",
-            "STATICCARONPARKING": "STATICCARONPARKING",
-            "STATICCAR": "STATICCARONPARKING",
-            "PARKEDCAR": "STATICCARONPARKING",
-            "PEDESTRIAN": "PEDESTRIAN",
-            "PEDESTRIANONROAD": "PEDESTRIANONROAD",
-            "PERSON": "PEDESTRIAN",
-            "ROADBLOCK": "ROADBLOCK",
-            "BLOCK": "ROADBLOCK",
-            "TRAFFICLIGHT": "TRAFFICLIGHT",
-            "LIGHTS": "TRAFFICLIGHT",
-            "FOG": "FOG",
-            "TUNNEL": "TUNNEL",
-            "RAMP": "RAMP",
-        }
-        return alias_map.get(normalized)
-
     def _flush_to_shared_memory(self):
         now = time.monotonic()
 
@@ -590,23 +355,6 @@ class threadTrafficDataCollector(ThreadWithStop):
         if self.latest_speed is not None and (now - self._last_insert["deviceSpeed"]) >= self._min_publish_period:
             self.shared_memory.insert("deviceSpeed", [self.latest_speed])
             self._last_insert["deviceSpeed"] = now
-
-        # [ADDED][historyData] push new /obstacle/event_xy event as historyData(value1=id, value2=x, value3=y).
-        has_new_history = (
-            self.latest_history is not None
-            and self._history_update_seq != self._last_shared_history_seq
-        )
-        if has_new_history and (now - self._last_insert["historyData"]) >= self._min_publish_period:
-            self.shared_memory.insert(
-                "historyData",
-                [
-                    int(self.latest_history[0]),
-                    float(self.latest_history[1]),
-                    float(self.latest_history[2]),
-                ],
-            )
-            self._last_insert["historyData"] = now
-            self._last_shared_history_seq = self._history_update_seq
 
     def _close_tcp(self):
         if self._sock is not None:
@@ -706,12 +454,7 @@ class threadTrafficDataCollector(ThreadWithStop):
             return
         has_pose_payload = self.latest_pos is not None and self.latest_rot is not None
         has_speed_payload = self._tcp_send_speed and self.latest_speed is not None
-        # [ADDED][historyData] send each new history event once over TCP.
-        has_history_payload = (
-            self.latest_history is not None
-            and self._history_update_seq != self._last_tcp_history_seq
-        )
-        if not has_pose_payload and not has_speed_payload and not has_history_payload:
+        if not has_pose_payload and not has_speed_payload:
             return
 
         now = time.monotonic()
@@ -756,20 +499,6 @@ class threadTrafficDataCollector(ThreadWithStop):
                 return
             if self._verbose_log:
                 self._log_speed_sent(speed_value, speed_source)
-
-        if has_history_payload:
-            ok = self._send_tcp_json(
-                {
-                    "reqORinfo": "info",
-                    "type": "historyData",
-                    "value1": int(self.latest_history[0]),
-                    "value2": float(self.latest_history[1]),
-                    "value3": float(self.latest_history[2]),
-                }
-            )
-            if not ok:
-                return
-            self._last_tcp_history_seq = self._history_update_seq
 
         self._last_tcp_send = now
 
