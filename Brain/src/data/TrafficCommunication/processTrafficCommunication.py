@@ -41,6 +41,8 @@ from multiprocessing import Pipe
 from src.data.TrafficCommunication.useful.sharedMem import sharedMem
 from src.templates.workerprocess import WorkerProcess
 from src.templates.threadwithstop import ThreadWithStop
+from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
+from src.utils.messages.allMessages import Semaphores
 try:
     from src.data.TrafficCommunication.threads.threadTrafficCommunication import threadTrafficCommunication
 except Exception:
@@ -72,9 +74,10 @@ class threadTrafficDataCollector(ThreadWithStop):
     SPEED_TOPIC = "/wheel_encoder"         # expected type: geometry_msgs/Vector3Stamped (y in m/s)
     SPEED_TWIST_TOPIC = "/wheel_twist"     # expected type: geometry_msgs/TwistWithCovarianceStamped (linear.x in m/s)
 
-    def __init__(self, shared_memory, logger=None, debugging=False):
+    def __init__(self, shared_memory, queues_list=None, logger=None, debugging=False):
         super(threadTrafficDataCollector, self).__init__(pause=0.05)
         self.shared_memory = shared_memory
+        self.queues_list = queues_list
         self.logger = logger
         self.debugging = debugging
 
@@ -108,7 +111,8 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._last_tcp_diag_log = 0.0
         self._traffic_color_topic = os.getenv("TRAFFIC_COLOR_TOPIC", "/traffic_color")
         self._traffic_color_pub = None
-        self._udp_enabled = os.getenv("TRAFFIC_UDP_SEMAPHORE_ENABLE", "1").lower() in ("1", "true", "yes", "y")
+        # UDP direct listen is optional; prefer queue feed from processSemaphores to avoid port conflicts.
+        self._udp_enabled = os.getenv("TRAFFIC_UDP_SEMAPHORE_ENABLE", "0").lower() in ("1", "true", "yes", "y")
         self._udp_port = int(os.getenv("TRAFFIC_UDP_SEMAPHORE_PORT", "5007"))
         self._udp_bind_ip = os.getenv("TRAFFIC_UDP_SEMAPHORE_BIND_IP", "").strip()
         self._udp_sock = None
@@ -121,6 +125,14 @@ class threadTrafficDataCollector(ThreadWithStop):
                 self._udp_semaphore_id_filter = int(sem_id_filter)
             except ValueError:
                 self._udp_semaphore_id_filter = None
+        self._semaphore_subscriber = None
+        if self.queues_list is not None:
+            try:
+                self._semaphore_subscriber = messageHandlerSubscriber(
+                    self.queues_list, Semaphores, "lastOnly", True
+                )
+            except Exception:
+                self._semaphore_subscriber = None
 
         self._ros_enabled = (
             rclpy is not None
@@ -161,6 +173,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._flush_to_shared_memory()
         self._flush_to_tcp()
         self._poll_tcp_rx()
+        self._poll_semaphore_queue()
         self._poll_udp_rx()
         if self._verbose_log:
             self._log_waiting_pose()
@@ -517,6 +530,17 @@ class threadTrafficDataCollector(ThreadWithStop):
 
             self._handle_tcp_payload(payload)
 
+    def _poll_semaphore_queue(self):
+        if self._semaphore_subscriber is None:
+            return
+        try:
+            payload = self._semaphore_subscriber.receive()
+        except Exception:
+            return
+        if payload is None:
+            return
+        self._handle_tcp_payload(payload)
+
     def _consume_tcp_rx_buffer(self):
         if not self._tcp_rx_buffer:
             return
@@ -726,7 +750,7 @@ class processTrafficCommunication(WorkerProcess):
         """Create the Traffic Communication thread and add it to the list of threads."""
 
         TrafficDataCollectorTh = threadTrafficDataCollector(
-            self.shared_memory, self.logging, self.debugging
+            self.shared_memory, self.queuesList, self.logging, self.debugging
         )
         self.threads.append(TrafficDataCollectorTh)
 
