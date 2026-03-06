@@ -602,14 +602,12 @@ class threadTrafficDataCollector(ThreadWithStop):
             self._publish_gps(gps_xy[0], gps_xy[1])
 
     def _extract_semaphore_payload(self, payload):
+        # Publish as-is. Filter only non-traffic payloads.
         if not isinstance(payload, dict):
-            return None
+            return payload
 
-        # UDP stream example:
-        # {"device":"semaphore","id":0,"state":"red","x":1,"y":1}
         device = str(payload.get("device", "")).strip().lower()
-        has_state = "state" in payload
-        if device == "semaphore" or (has_state and device in ("", "semaphore")):
+        if device == "semaphore" or ("state" in payload and device in ("", "semaphore")):
             if self._udp_semaphore_id_filter is not None:
                 try:
                     sem_id = int(payload.get("id"))
@@ -617,16 +615,14 @@ class threadTrafficDataCollector(ThreadWithStop):
                     return None
                 if sem_id != self._udp_semaphore_id_filter:
                     return None
-            color = self._coerce_traffic_color(payload.get("state"))
-            if color is None:
-                return None
-            return self._build_semaphore_payload(payload, color)
+            return payload
 
-        # Fallback for generic traffic-color payloads from other servers.
-        color = self._extract_traffic_color(payload)
-        if color is None:
-            return None
-        return self._build_semaphore_payload(payload, color)
+        msg_type = str(payload.get("type", "")).strip().lower()
+        if msg_type in ("traffic_color", "trafficcolor", "traffic_light", "trafficlight"):
+            return payload
+        if "traffic_color" in payload or "trafficColor" in payload:
+            return payload
+        return None
 
     def _build_semaphore_payload(self, payload, color_value):
         state_raw = payload.get("state")
@@ -728,10 +724,13 @@ class threadTrafficDataCollector(ThreadWithStop):
         if self._ros_node is None or self._traffic_color_pub is None or StringMsg is None:
             return
         msg = StringMsg()
-        try:
-            msg.data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        except Exception:
-            msg.data = str(payload)
+        if isinstance(payload, str):
+            msg.data = payload
+        else:
+            try:
+                msg.data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            except Exception:
+                msg.data = str(payload)
         self._traffic_color_pub.publish(msg)
 
     def _extract_gps_xy(self, payload):
