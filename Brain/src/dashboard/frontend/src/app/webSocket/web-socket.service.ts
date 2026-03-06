@@ -73,6 +73,8 @@ export class WebSocketService {
   ]);
 
   constructor() {
+    this.clearFrontendCacheOnStartup();
+
     const params = new URLSearchParams(window.location.search);
     const override = params.get('backend') || localStorage.getItem('dashboardBackend');
     const protocol = window.location.protocol === 'https:' ? 'https' : 'http';
@@ -133,6 +135,20 @@ export class WebSocketService {
     this.webSocket.ioSocket.on('reconnect_error', (error: any) => {
       this.connectionStatusSubject.next('error');
     });
+  }
+
+  private clearFrontendCacheOnStartup(): void {
+    // A stale backend override frequently causes dashboard reconnect loops after restarts.
+    try {
+      localStorage.removeItem('dashboardBackend');
+    } catch (_) {}
+
+    // Remove runtime cache entries if available (best effort).
+    if (typeof window !== 'undefined' && 'caches' in window) {
+      void caches.keys()
+        .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+        .catch(() => {});
+    }
   }
 
   // Method to start connection/handshake with the server
