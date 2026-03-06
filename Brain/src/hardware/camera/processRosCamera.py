@@ -38,7 +38,7 @@ ROS_CAMERA_KEEPALIVE_SEC = float(os.getenv("ROS_CAMERA_KEEPALIVE_SEC", "1.0"))
 # If True and using /compressed topics, forward bytes as-is (no decode/resize).
 # This minimizes CPU and prevents queue buildup from expensive re-encoding.
 # Set to 0 when you want to downscale here for lower bandwidth.
-ROS_CAMERA_PASSTHROUGH = os.getenv("ROS_CAMERA_PASSTHROUGH", "0") == "1"
+ROS_CAMERA_PASSTHROUGH = os.getenv("ROS_CAMERA_PASSTHROUGH", "1") == "1"
 
 # Downscale size when passthrough is off. Format: "WIDTHxHEIGHT".
 # Example: 320x180
