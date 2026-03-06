@@ -136,6 +136,14 @@ class processDashboard(WorkerProcess):
         # serial connection state
         self.serialConnected = False
 
+        # Semaphores stream can include high-rate car updates.
+        # Keep only latest semaphore states and emit in small batches.
+        self._latest_semaphores = {}
+        self._pending_semaphore_ids = set()
+        self._last_semaphore_emit = 0.0
+        self._semaphore_emit_period_s = float(os.getenv("DASHBOARD_SEMAPHORE_EMIT_PERIOD", "0.2"))
+        self._semaphore_drain_limit = int(os.getenv("DASHBOARD_SEMAPHORE_DRAIN_LIMIT", "256"))
+
         # configuration
         self.table_state_file = self._get_table_state_path()
 
@@ -451,6 +459,9 @@ class processDashboard(WorkerProcess):
 
         try:
             for msg, subscriber in self.messages.items():
+                if msg == "Semaphores":
+                    self._drain_and_emit_semaphores(subscriber["obj"])
+                    continue
                 resp = subscriber["obj"].receive()
                 if resp is not None:
                     if msg == "SerialConnectionState":
@@ -469,6 +480,48 @@ class processDashboard(WorkerProcess):
             self.logger.error(f"send_continuous_messages failed: {exc}")
 
         eventlet.spawn_after(0.1, self.send_continuous_messages)
+
+    def _drain_and_emit_semaphores(self, subscriber_obj):
+        drained = 0
+        while drained < self._semaphore_drain_limit:
+            resp = subscriber_obj.receive()
+            if resp is None:
+                break
+            drained += 1
+
+            if not isinstance(resp, dict):
+                continue
+            state = resp.get("state")
+            if not isinstance(state, str) or not state:
+                # Ignore non-semaphore packets (e.g. car payloads).
+                continue
+
+            try:
+                sem_id = int(resp.get("id"))
+                x = float(resp.get("x"))
+                y = float(resp.get("y"))
+            except Exception:
+                continue
+
+            normalized = {"id": sem_id, "state": state, "x": x, "y": y}
+            if self._latest_semaphores.get(sem_id) != normalized:
+                self._latest_semaphores[sem_id] = normalized
+                self._pending_semaphore_ids.add(sem_id)
+
+        if not self._pending_semaphore_ids:
+            return
+
+        now = time.monotonic()
+        if now - self._last_semaphore_emit < self._semaphore_emit_period_s:
+            return
+
+        for sem_id in sorted(self._pending_semaphore_ids):
+            payload = self._latest_semaphores.get(sem_id)
+            if payload is None:
+                continue
+            self.socketio.emit("Semaphores", {"value": payload})
+        self._pending_semaphore_ids.clear()
+        self._last_semaphore_emit = now
 
 
     def send_hardware_data_to_frontend(self):

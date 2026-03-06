@@ -156,6 +156,10 @@ export class MapComponent {
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(id)) {
           return;
         }
+        const prev = this.semaphores.get(id);
+        if (prev && prev.x === x && prev.y === y && prev.state === recv.state) {
+          return;
+        }
         this.semaphores.set(id, { x, y, state: recv.state });
       },
     );

@@ -114,6 +114,8 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._gps_topic = os.getenv("TRAFFIC_GPS_TOPIC", "/gps")
         self._gps_frame_id = os.getenv("TRAFFIC_GPS_FRAME_ID", "map")
         self._gps_pub = None
+        self._gps_min_publish_period = float(os.getenv("TRAFFIC_GPS_MIN_PUBLISH_PERIOD", "0.1"))
+        self._last_gps_publish = 0.0
         car_id_filter = os.getenv("TRAFFIC_GPS_CAR_ID", "*").strip()
         if car_id_filter in ("", "*"):
             self._gps_car_id_filter = None
@@ -767,6 +769,9 @@ class threadTrafficDataCollector(ThreadWithStop):
     def _publish_gps(self, x, y):
         if self._ros_node is None or self._gps_pub is None or PoseStamped is None:
             return
+        now = time.monotonic()
+        if self._gps_min_publish_period > 0.0 and (now - self._last_gps_publish) < self._gps_min_publish_period:
+            return
         msg = PoseStamped()
         msg.header.stamp = self._ros_node.get_clock().now().to_msg()
         msg.header.frame_id = self._gps_frame_id
@@ -778,6 +783,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         msg.pose.orientation.z = 0.0
         msg.pose.orientation.w = 1.0
         self._gps_pub.publish(msg)
+        self._last_gps_publish = now
 
     def _log_waiting_pose(self):
         if not self._tcp_enabled:
