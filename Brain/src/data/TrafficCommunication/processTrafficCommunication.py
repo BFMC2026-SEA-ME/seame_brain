@@ -111,6 +111,17 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._last_tcp_diag_log = 0.0
         self._traffic_color_topic = os.getenv("TRAFFIC_COLOR_TOPIC", "/traffic_color")
         self._traffic_color_pub = None
+        self._gps_topic = os.getenv("TRAFFIC_GPS_TOPIC", "/gps")
+        self._gps_frame_id = os.getenv("TRAFFIC_GPS_FRAME_ID", "map")
+        self._gps_pub = None
+        car_id_filter = os.getenv("TRAFFIC_GPS_CAR_ID", "*").strip()
+        if car_id_filter in ("", "*"):
+            self._gps_car_id_filter = None
+        else:
+            try:
+                self._gps_car_id_filter = int(car_id_filter)
+            except ValueError:
+                self._gps_car_id_filter = None
         # UDP direct listen is optional; prefer queue feed from processSemaphores to avoid port conflicts.
         self._udp_enabled = os.getenv("TRAFFIC_UDP_SEMAPHORE_ENABLE", "0").lower() in ("1", "true", "yes", "y")
         self._udp_port = int(os.getenv("TRAFFIC_UDP_SEMAPHORE_PORT", "5007"))
@@ -226,6 +237,10 @@ class threadTrafficDataCollector(ThreadWithStop):
                 self._traffic_color_pub = self._ros_node.create_publisher(
                     Int32, self._traffic_color_topic, 10
                 )
+            if PoseStamped is not None:
+                self._gps_pub = self._ros_node.create_publisher(
+                    PoseStamped, self._gps_topic, 10
+                )
             subs = [self.POS_TOPIC, self.SPEED_TOPIC]
             if self._use_twist_speed_source:
                 subs.append(self.SPEED_TWIST_TOPIC)
@@ -247,6 +262,7 @@ class threadTrafficDataCollector(ThreadWithStop):
                 pass
             self._ros_node = None
             self._traffic_color_pub = None
+            self._gps_pub = None
 
         if self._ros_initialized_here and rclpy is not None and rclpy.ok():
             try:
@@ -576,9 +592,12 @@ class threadTrafficDataCollector(ThreadWithStop):
 
     def _handle_tcp_payload(self, payload):
         color_value = self._extract_traffic_color(payload)
-        if color_value is None:
-            return
-        self._publish_traffic_color(color_value)
+        if color_value is not None:
+            self._publish_traffic_color(color_value)
+
+        gps_xy = self._extract_gps_xy(payload)
+        if gps_xy is not None:
+            self._publish_gps(gps_xy[0], gps_xy[1])
 
     def _extract_traffic_color(self, payload):
         if not isinstance(payload, dict):
@@ -644,6 +663,53 @@ class threadTrafficDataCollector(ThreadWithStop):
         msg = Int32()
         msg.data = int(color_value)
         self._traffic_color_pub.publish(msg)
+
+    def _extract_gps_xy(self, payload):
+        if not isinstance(payload, dict):
+            return None
+
+        device = str(payload.get("device", "")).strip().lower()
+        msg_type = str(payload.get("type", "")).strip().lower()
+
+        is_car = False
+        if device == "car" or msg_type in ("car", "location", "gps"):
+            is_car = True
+        elif device in ("", "car") and "x" in payload and "y" in payload and "state" not in payload:
+            # Semaphores queue car payload has no `device`/`type`.
+            is_car = True
+
+        if not is_car:
+            return None
+
+        if self._gps_car_id_filter is not None:
+            try:
+                car_id = int(payload.get("id"))
+            except Exception:
+                return None
+            if car_id != self._gps_car_id_filter:
+                return None
+
+        try:
+            x = float(payload.get("x"))
+            y = float(payload.get("y"))
+        except Exception:
+            return None
+        return (x, y)
+
+    def _publish_gps(self, x, y):
+        if self._ros_node is None or self._gps_pub is None or PoseStamped is None:
+            return
+        msg = PoseStamped()
+        msg.header.stamp = self._ros_node.get_clock().now().to_msg()
+        msg.header.frame_id = self._gps_frame_id
+        msg.pose.position.x = float(x)
+        msg.pose.position.y = float(y)
+        msg.pose.position.z = 0.0
+        msg.pose.orientation.x = 0.0
+        msg.pose.orientation.y = 0.0
+        msg.pose.orientation.z = 0.0
+        msg.pose.orientation.w = 1.0
+        self._gps_pub.publish(msg)
 
     def _log_waiting_pose(self):
         if not self._tcp_enabled:
