@@ -439,6 +439,13 @@ class GlobalPlanningBridgeNode(Node):
         return None
 
     def _to_canonical_class_name(self, normalized: str) -> Optional[str]:
+        # Handle common highway aliases/variants first.
+        if "HIGHWAY" in normalized:
+            if any(token in normalized for token in ("ENTRANCE", "ENTRY", "IN")):
+                return "HIGHWAYENTRANCE"
+            if any(token in normalized for token in ("EXIT", "OUT")):
+                return "HIGHWAYEXIT"
+
         alias_map = {
             "ONEWAY": "ONEWAY",
             "HIGHWAYENTRANCE": "HIGHWAYENTRANCE",
