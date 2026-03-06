@@ -84,8 +84,8 @@ export class MapComponent {
 
   private cursorSize: number = 6; // cursor size in % for width
   private hasLocation: boolean = false;
-  public semaphoreImageWidth: number = 34;
-  public semaphoreImageHeight: number = 68;
+  public semaphoreImageWidth: number = 17;
+  public semaphoreImageHeight: number = 34;
   
   public semaphores: Map<number, Semaphore> = new Map<number, Semaphore>();
   public graphNodes: MapNode[] = [];
