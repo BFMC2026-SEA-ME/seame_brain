@@ -110,6 +110,8 @@ export class MapComponent {
   private locationSubscription: Subscription | undefined;
   private semaphoresAndCarsSubscription: Subscription | undefined;
   private mapNodesSubscription: Subscription | undefined;
+  private lastPoseUpdateMs: number = 0;
+  private readonly poseUpdatePeriodMs: number = 66;
 
   constructor( private  webSocketService: WebSocketService) { }
   
@@ -117,6 +119,12 @@ export class MapComponent {
   {
     this.locationSubscription = this.webSocketService.receiveGlobalPose().subscribe(
       (message) => {
+        const now = performance.now();
+        if (now - this.lastPoseUpdateMs < this.poseUpdatePeriodMs) {
+          return;
+        }
+        this.lastPoseUpdateMs = now;
+
         const payload = (message as any)?.value ?? message;
         if (!payload) {
           return;

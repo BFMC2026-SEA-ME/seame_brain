@@ -44,12 +44,15 @@ export class LiveCameraComponent {
   private canvasSize: number[] = [512, 270];
   private cameraSubscription: Subscription | undefined;
   private loadingTimeout: any;
+  private objectUrl: string | null = null;
+  private blackImage: string = '';
 
   constructor( private  webSocketService: WebSocketService) { }
 
   ngOnInit()
   {  
-    this.image = this.createBlackImage();
+    this.blackImage = this.createBlackImage();
+    this.image = this.blackImage;
 
     this.cameraSubscription = this.webSocketService.receiveCamera().subscribe(
       (message) => {
@@ -57,21 +60,22 @@ export class LiveCameraComponent {
         const payload = (message as any)?.value ?? message;
 
         if (payload instanceof Blob) {
-          this.image = URL.createObjectURL(payload);
+          this.setBlobImage(payload);
         } else if (payload instanceof ArrayBuffer) {
           const blob = new Blob([payload], { type: 'image/jpeg' });
-          this.image = URL.createObjectURL(blob);
+          this.setBlobImage(blob);
         } else if (payload && (payload as any).type === 'Buffer' && Array.isArray((payload as any).data)) {
           const blob = new Blob([new Uint8Array((payload as any).data)], { type: 'image/jpeg' });
-          this.image = URL.createObjectURL(blob);
+          this.setBlobImage(blob);
         } else if (typeof payload === 'string') {
+          this.revokeObjectUrl();
           // 이미 data URL이면 그대로, 아니면 base64로 가정
           this.image = payload.startsWith('data:image')
             ? payload
             : `data:image/jpeg;base64,${payload}`;
         } else {
           // 알 수 없는 타입이면 블랙 이미지로 리셋
-          this.image = this.createBlackImage();
+          this.setBlackImage();
         }
         this.loading = false;
         // Reset the loading timeout on each new image
@@ -80,11 +84,11 @@ export class LiveCameraComponent {
         }
         this.loadingTimeout = setTimeout(() => {
           this.loading = true;
-          this.image = this.createBlackImage();
+          this.setBlackImage();
         }, 2000);
       },
       (error) => {
-        this.image = this.createBlackImage();
+        this.setBlackImage();
         this.loading = true;
         console.error('Error receiving disk usage:', error);
       }
@@ -98,6 +102,27 @@ export class LiveCameraComponent {
     if (this.loadingTimeout) {
       clearTimeout(this.loadingTimeout);
     }
+    this.revokeObjectUrl();
+  }
+
+  private setBlobImage(blob: Blob): void {
+    const nextUrl = URL.createObjectURL(blob);
+    this.revokeObjectUrl();
+    this.objectUrl = nextUrl;
+    this.image = nextUrl;
+  }
+
+  private revokeObjectUrl(): void {
+    if (!this.objectUrl) {
+      return;
+    }
+    URL.revokeObjectURL(this.objectUrl);
+    this.objectUrl = null;
+  }
+
+  private setBlackImage(): void {
+    this.revokeObjectUrl();
+    this.image = this.blackImage;
   }
 
   createBlackImage(): string {

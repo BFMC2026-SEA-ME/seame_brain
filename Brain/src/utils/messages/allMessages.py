@@ -75,13 +75,13 @@ class Semaphores(Enum):
 
 ################################# From Dashboard ##################################
 class SpeedMotor(Enum):
-    Queue = "General"
+    Queue = "Warning"
     Owner = "Dashboard"
     msgID = 1
     msgType = "str"
 
 class SteerMotor(Enum):
-    Queue = "General"
+    Queue = "Warning"
     Owner = "Dashboard"
     msgID = 2
     msgType = "str"
@@ -93,7 +93,7 @@ class Control(Enum):
     msgType = "dict"
 
 class Brake(Enum):
-    Queue = "General"
+    Queue = "Warning"
     Owner = "Dashboard"
     msgID = 4
     msgType = "str"

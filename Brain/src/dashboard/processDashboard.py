@@ -143,6 +143,8 @@ class processDashboard(WorkerProcess):
         self._last_semaphore_emit = 0.0
         self._semaphore_emit_period_s = float(os.getenv("DASHBOARD_SEMAPHORE_EMIT_PERIOD", "0.25"))
         self._semaphore_drain_limit = int(os.getenv("DASHBOARD_SEMAPHORE_DRAIN_LIMIT", "64"))
+        self._last_camera_emit = 0.0
+        self._camera_emit_period_s = float(os.getenv("DASHBOARD_CAMERA_EMIT_PERIOD", "0.12"))
         self._no_ack_message_names = {"SteerMotor", "SpeedMotor", "Brake", "Control"}
 
         # configuration
@@ -469,6 +471,10 @@ class processDashboard(WorkerProcess):
                     if msg == "SerialConnectionState":
                         self.serialConnected = resp
                     if msg == "serialCamera":
+                        now = time.monotonic()
+                        if now - self._last_camera_emit < self._camera_emit_period_s:
+                            continue
+                        self._last_camera_emit = now
                         # 바이너리 이미지 전송 (socket.IO로 전송)
                         try:
                             self.socketio.emit(msg, resp, binary=True)
