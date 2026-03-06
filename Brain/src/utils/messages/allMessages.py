@@ -224,6 +224,12 @@ class GlobalPose(Enum):
     msgID = 25
     msgType = "dict"
 
+class RoadSign(Enum):
+    Queue = "General"
+    Owner = "GlobalPlanningBridge"
+    msgID = 26
+    msgType = "dict"
+
 class RequestMapNodes(Enum):
     Queue = "General"
     Owner = "Dashboard"

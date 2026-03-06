@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -49,6 +50,7 @@ from src.utils.messages.allMessages import (  # type: ignore
     GlobalPath,
     GlobalPose,
     MapNodes,
+    RoadSign,
     RequestMapNodes,
 )
 from src.utils.messages.messageHandlerSender import messageHandlerSender  # type: ignore
@@ -176,21 +178,40 @@ class GlobalPlanningBridgeNode(Node):
         queues_list: Mapping[str, object],
         path_sender: messageHandlerSender,
         pose_sender: messageHandlerSender,
+        road_sign_sender: messageHandlerSender,
     ):
         super().__init__("global_planning_bridge")
         self._queues_list = queues_list
         self._path_sender = path_sender
         self._pose_sender = pose_sender
+        self._road_sign_sender = road_sign_sender
         self._last_path_send = 0.0
         self._path_send_period = 0.5  # 2 Hz
         self._last_pose_send = 0.0
         self._pose_send_period = 0.1  # 10 Hz
+        self._last_sign_send = 0.0
+        self._sign_send_period = float(os.environ.get("ROAD_SIGN_SEND_PERIOD", "0.1"))
         self._enable_path_stream = str(os.environ.get("DASHBOARD_ENABLE_GLOBAL_PATH", "0")).lower() in (
             "1",
             "true",
             "yes",
             "y",
         )
+        self._allowed_classes = {
+            "ONEWAY",
+            "HIGHWAYENTRANCE",
+            "STOPSIGN",
+            "ROUNDABOUT",
+            "PARK",
+            "CROSSWALK",
+            "NOENTRY",
+            "HIGHWAYEXIT",
+            "PRIORITY",
+            "LIGHTS",
+            "BLOCK",
+            "PEDESTRIAN",
+            "CAR",
+        }
 
         goal_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -251,6 +272,23 @@ class GlobalPlanningBridgeNode(Node):
                     self.get_logger().warning("PoseStamped not available, /global_pose subscription disabled.")
         except Exception as exc:
             self.get_logger().warning(f"Failed to subscribe {self._global_pose_topic}: {exc}")
+
+        self._event_xy_topic = str(os.environ.get("ROAD_SIGN_EVENT_XY_TOPIC", "/event_xy"))
+        self._obstacle_roi_topic = str(os.environ.get("ROAD_SIGN_OBSTACLE_ROI_TOPIC", "/obstacle_roi"))
+        self._event_xy_sub = None
+        self._obstacle_roi_sub = None
+        try:
+            self._event_xy_sub = self.create_subscription(
+                String, self._event_xy_topic, self._on_event_xy, path_qos
+            )
+        except Exception as exc:
+            self.get_logger().warning(f"Failed to subscribe {self._event_xy_topic}: {exc}")
+        try:
+            self._obstacle_roi_sub = self.create_subscription(
+                String, self._obstacle_roi_topic, self._on_obstacle_roi, path_qos
+            )
+        except Exception as exc:
+            self.get_logger().warning(f"Failed to subscribe {self._obstacle_roi_topic}: {exc}")
 
     def publish_goal(self, node_id: str) -> None:
         msg = String()
@@ -317,6 +355,107 @@ class GlobalPlanningBridgeNode(Node):
             pose.orientation.w,
         )
 
+    def _on_event_xy(self, msg: String) -> None:
+        self._handle_road_sign_payload(msg.data, self._event_xy_topic)
+
+    def _on_obstacle_roi(self, msg: String) -> None:
+        self._handle_road_sign_payload(msg.data, self._obstacle_roi_topic)
+
+    def _handle_road_sign_payload(self, raw: str, source_topic: str) -> None:
+        class_name = self._extract_class_name(raw)
+        if class_name is None:
+            return
+
+        now = time.time()
+        if now - self._last_sign_send < self._sign_send_period:
+            return
+
+        payload = {
+            "class_name": class_name,
+            "source_topic": source_topic,
+        }
+        self._road_sign_sender.send(payload)
+        self._last_sign_send = now
+
+    def _extract_class_name(self, raw: str) -> Optional[str]:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+
+        candidates = []
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, str):
+                candidates.append(parsed)
+            elif isinstance(parsed, dict):
+                for key in (
+                    "class_name",
+                    "className",
+                    "class",
+                    "label",
+                    "name",
+                    "event",
+                    "type",
+                    "value",
+                ):
+                    value = parsed.get(key)
+                    if isinstance(value, str) and value.strip():
+                        candidates.append(value)
+                classes = parsed.get("classes")
+                if isinstance(classes, list):
+                    for item in classes:
+                        if isinstance(item, str):
+                            candidates.append(item)
+                        elif isinstance(item, dict):
+                            value = item.get("class_name") or item.get("class") or item.get("label")
+                            if isinstance(value, str):
+                                candidates.append(value)
+            elif isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, str):
+                        candidates.append(item)
+                    elif isinstance(item, dict):
+                        value = item.get("class_name") or item.get("class") or item.get("label")
+                        if isinstance(value, str):
+                            candidates.append(value)
+        except Exception:
+            pass
+
+        if not candidates:
+            candidates.append(text)
+
+        for candidate in candidates:
+            normalized = "".join(ch for ch in str(candidate).strip().upper() if ch.isalnum())
+            canonical = self._to_canonical_class_name(normalized)
+            if canonical is not None:
+                return canonical
+
+        return None
+
+    def _to_canonical_class_name(self, normalized: str) -> Optional[str]:
+        alias_map = {
+            "ONEWAY": "ONEWAY",
+            "HIGHWAYENTRANCE": "HIGHWAYENTRANCE",
+            "STOPSIGN": "STOPSIGN",
+            "ROUNDABOUT": "ROUNDABOUT",
+            "PARK": "PARK",
+            "PARKING": "PARK",
+            "CROSSWALK": "CROSSWALK",
+            "NOENTRY": "NOENTRY",
+            "HIGHWAYEXIT": "HIGHWAYEXIT",
+            "PRIORITY": "PRIORITY",
+            "LIGHTS": "LIGHTS",
+            "TRAFFICLIGHT": "LIGHTS",
+            "BLOCK": "BLOCK",
+            "ROADBLOCK": "BLOCK",
+            "PEDESTRIAN": "PEDESTRIAN",
+            "CAR": "CAR",
+        }
+        canonical = alias_map.get(normalized)
+        if canonical in self._allowed_classes:
+            return canonical
+        return None
+
 
 class _GlobalPlanningBridgeThread(ThreadWithStop):
     def __init__(self, queues_list: Mapping[str, object]) -> None:
@@ -334,6 +473,7 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
         self._path_sender = messageHandlerSender(self._queues_list, GlobalPath, drop_old=True)
         self._pose_sender = messageHandlerSender(self._queues_list, GlobalPose, drop_old=True)
         self._map_nodes_sender = messageHandlerSender(self._queues_list, MapNodes, drop_old=True)
+        self._road_sign_sender = messageHandlerSender(self._queues_list, RoadSign, drop_old=True)
 
         self._graph_sent = False
         self._last_graph_try = 0.0
@@ -383,7 +523,9 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
             if not rclpy.ok():
                 rclpy.init(args=None)
 
-            self._node = GlobalPlanningBridgeNode(self._queues_list, self._path_sender, self._pose_sender)
+            self._node = GlobalPlanningBridgeNode(
+                self._queues_list, self._path_sender, self._pose_sender, self._road_sign_sender
+            )
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
         except Exception as exc:

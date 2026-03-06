@@ -68,7 +68,8 @@ export class WebSocketService {
     'ImuAck',
     'GlobalPath',
     'MapNodes',
-    'GlobalPose'
+    'GlobalPose',
+    'RoadSign'
   ]);
 
   constructor() {
@@ -246,6 +247,10 @@ export class WebSocketService {
 
   receiveGlobalPose(): Observable<any> {
     return this.webSocket.fromEvent('GlobalPose');
+  }
+
+  receiveRoadSign(): Observable<any> {
+    return this.webSocket.fromEvent('RoadSign');
   }
 
   receiveSteerLimits(): Observable<any> {
