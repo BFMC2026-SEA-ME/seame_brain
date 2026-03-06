@@ -119,12 +119,8 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._last_ros_match_log = 0.0
 
         if self._verbose_log and not self._ros_enabled:
-            print(
-                f"\033[1;97m[ Traffic Communication ] :\033[0m "
-                f"\033[1;93mWARNING\033[0m - ROS2 deps unavailable "
-                f"(rclpy/geometry_msgs missing). "
-                f"Pose-based traffic send is disabled."
-            )
+            # WARNING log intentionally suppressed.
+            pass
         if self._verbose_log and self._tcp_enabled:
             bind_info = self._tcp_bind_ip if self._tcp_bind_ip else "auto"
             print(
@@ -169,8 +165,7 @@ class threadTrafficDataCollector(ThreadWithStop):
 
         try:
             rclpy.spin_once(self._ros_node, timeout_sec=0.0)
-        except Exception as exc:
-            print(f"\033[1;97m[ Traffic Communication ] :\033[0m \033[1;93mWARNING\033[0m - ROS spin failed ({exc})")
+        except Exception:
             self._close_ros()
             self._next_ros_retry = time.monotonic() + 3.0
 
@@ -201,8 +196,7 @@ class threadTrafficDataCollector(ThreadWithStop):
                     f"\033[1;92mINFO\033[0m - ROS subscribers active: "
                     + ", ".join(f"\033[94m{s}\033[0m" for s in subs)
                 )
-        except Exception as exc:
-            print(f"\033[1;97m[ Traffic Communication ] :\033[0m \033[1;93mWARNING\033[0m - ROS topic listener init failed ({exc})")
+        except Exception:
             self._close_ros()
             self._next_ros_retry = time.monotonic() + 3.0
 
@@ -312,17 +306,9 @@ class threadTrafficDataCollector(ThreadWithStop):
                 f"\033[94m{self._tcp_host}:{self._tcp_port}\033[0m"
             )
             return True
-        except Exception as exc:
+        except Exception:
             self._close_tcp()
             self._next_tcp_retry = now + 3.0
-            diag = self._compute_tcp_route_diag()
-            print(
-                f"\033[1;97m[ Traffic Communication ] :\033[0m "
-                f"\033[1;93mWARNING\033[0m - Simple TCP connect failed "
-                f"to \033[94m{self._tcp_host}:{self._tcp_port}\033[0m "
-                f"(bind_ip={self._tcp_bind_ip if self._tcp_bind_ip else 'auto'}) "
-                f"({exc}){diag}"
-            )
             return False
 
     def _send_tcp_json(self, payload):
@@ -332,11 +318,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         try:
             self._sock.sendall(raw.encode("utf-8"))
             return True
-        except Exception as exc:
-            print(
-                f"\033[1;97m[ Traffic Communication ] :\033[0m "
-                f"\033[1;93mWARNING\033[0m - Simple TCP send failed ({exc})"
-            )
+        except Exception:
             self._close_tcp()
             self._next_tcp_retry = time.monotonic() + 3.0
             return False
@@ -403,11 +385,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         if now - self._last_no_pose_log < 5.0:
             return
         self._last_no_pose_log = now
-        print(
-            f"\033[1;97m[ Traffic Communication ] :\033[0m "
-            f"\033[1;93mWARNING\033[0m - Waiting for pose topic "
-            f"\033[94m{self.POS_TOPIC}\033[0m to publish PoseStamped"
-        )
+        # WARNING log intentionally suppressed.
 
     def _log_waiting_speed(self):
         if not self._tcp_enabled or not self._tcp_send_speed:
@@ -418,11 +396,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         if now - self._last_no_speed_log < 5.0:
             return
         self._last_no_speed_log = now
-        print(
-            f"\033[1;97m[ Traffic Communication ] :\033[0m "
-            f"\033[1;93mWARNING\033[0m - Waiting for speed topic "
-            f"\033[94m{self.SPEED_TOPIC}\033[0m or \033[94m{self.SPEED_TWIST_TOPIC}\033[0m"
-        )
+        # WARNING log intentionally suppressed.
 
     def _log_speed_sent(self, value, source):
         now = time.monotonic()
@@ -522,10 +496,8 @@ class processTrafficCommunication(WorkerProcess):
             )
             self.threads.append(TrafficComTh)
         elif legacy_enabled and threadTrafficCommunication is None:
-            print(
-                f"\033[1;97m[ Traffic Communication ] :\033[0m "
-                f"\033[1;93mWARNING\033[0m - Legacy traffic thread unavailable (missing dependencies)"
-            )
+            # WARNING log intentionally suppressed.
+            pass
 
 
 # =================================== EXAMPLE =========================================

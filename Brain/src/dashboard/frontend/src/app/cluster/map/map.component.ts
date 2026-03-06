@@ -99,7 +99,7 @@ export class MapComponent {
   public currentPoseYawDeg: number = 0;
   public currentPoseNodeId: string | null = null;
   // Change this path to use a different vehicle marker image.
-  public currentPoseImagePath: string = '/assets/Car.svg';
+  public currentPoseImagePath: string = '/assets/Car_top.png';
   public currentPoseImageWidth: number = 26;
   public currentPoseImageHeight: number = 26;
   public checkpointNodeIds: Set<string> = new Set([
