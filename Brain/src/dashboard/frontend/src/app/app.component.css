@@ -171,8 +171,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 .road-sign-panel {
   width: clamp(56px, calc(var(--cluster-width, 100vw) * 0.065), 120px);
-  background: rgba(11, 15, 18, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  aspect-ratio: 1 / 1;
+  background: #000000;
+  border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 10px;
   padding: clamp(4px, 0.6vw, 8px);
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
@@ -180,12 +181,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
   flex-direction: column;
   align-items: center;
   gap: 4px;
+  justify-content: center;
+}
+
+.road-sign-panel.active {
+  border-color: rgba(255, 255, 255, 0.45);
 }
 
 .road-sign-image {
-  width: 100%;
+  width: 88%;
   height: auto;
   object-fit: contain;
+}
+
+.road-sign-empty {
+  width: 88%;
+  height: 88%;
 }
 
 .road-sign-label {
@@ -195,14 +206,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
   text-align: center;
   width: 100%;
   word-break: break-word;
-}
-
-.road-sign-source {
-  font-size: clamp(7px, 0.62vw, 10px);
-  color: rgba(231, 237, 244, 0.78);
-  text-align: center;
-  width: 100%;
-  word-break: break-all;
 }
 
 .table { 

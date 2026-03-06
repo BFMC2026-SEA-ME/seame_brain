@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import math
@@ -273,7 +274,7 @@ class GlobalPlanningBridgeNode(Node):
         except Exception as exc:
             self.get_logger().warning(f"Failed to subscribe {self._global_pose_topic}: {exc}")
 
-        self._event_xy_topic = str(os.environ.get("ROAD_SIGN_EVENT_XY_TOPIC", "/event_xy"))
+        self._event_xy_topic = str(os.environ.get("ROAD_SIGN_EVENT_XY_TOPIC", "/obstacle_roi/event_xy"))
         self._obstacle_roi_topic = str(os.environ.get("ROAD_SIGN_OBSTACLE_ROI_TOPIC", "/obstacle_roi"))
         self._event_xy_sub = None
         self._obstacle_roi_sub = None
@@ -423,6 +424,11 @@ class GlobalPlanningBridgeNode(Node):
 
         if not candidates:
             candidates.append(text)
+        # Common detector payload format: "CLASS_NAME,score,x" (CSV-like)
+        for token in re.split(r"[,\s;|]+", text):
+            token = token.strip()
+            if token:
+                candidates.append(token)
 
         for candidate in candidates:
             normalized = "".join(ch for ch in str(candidate).strip().upper() if ch.isalnum())

@@ -101,13 +101,9 @@ export class AppComponent implements OnDestroy {
     ROUNDABOUT: 'roundabout',
     PARK: 'parking',
     CROSSWALK: 'crosswalk',
-    NOENTRY: 'forbidden',
     HIGHWAYEXIT: 'highway_exit',
     PRIORITY: 'priority',
-    LIGHTS: 'traffic_light',
-    BLOCK: 'road_block',
     PEDESTRIAN: 'ped_on_crosswalk',
-    CAR: 'car_ahead',
   };
 
   constructor(private webSocketService: WebSocketService, private clusterService: ClusterService) { }
