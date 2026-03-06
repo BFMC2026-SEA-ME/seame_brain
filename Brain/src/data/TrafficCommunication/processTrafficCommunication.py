@@ -129,7 +129,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         if self.queues_list is not None:
             try:
                 self._semaphore_subscriber = messageHandlerSubscriber(
-                    self.queues_list, Semaphores, "lastOnly", True
+                    self.queues_list, Semaphores, "fifo", True
                 )
             except Exception:
                 self._semaphore_subscriber = None
@@ -533,13 +533,16 @@ class threadTrafficDataCollector(ThreadWithStop):
     def _poll_semaphore_queue(self):
         if self._semaphore_subscriber is None:
             return
-        try:
-            payload = self._semaphore_subscriber.receive()
-        except Exception:
-            return
-        if payload is None:
-            return
-        self._handle_tcp_payload(payload)
+        # Semaphores queue carries both `car` and `semaphore` payloads.
+        # Drain a bounded batch so semaphore frames are not starved by car frames.
+        for _ in range(64):
+            try:
+                payload = self._semaphore_subscriber.receive()
+            except Exception:
+                return
+            if payload is None:
+                return
+            self._handle_tcp_payload(payload)
 
     def _consume_tcp_rx_buffer(self):
         if not self._tcp_rx_buffer:
