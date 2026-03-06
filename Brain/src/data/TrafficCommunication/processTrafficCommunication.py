@@ -52,17 +52,23 @@ try:
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-    from geometry_msgs.msg import PoseStamped, Vector3Stamped, TwistWithCovarianceStamped
-    from std_msgs.msg import String as StringMsg
 except Exception:
     rclpy = None
     Node = None
     QoSHistoryPolicy = None
     QoSProfile = None
     QoSReliabilityPolicy = None
+
+try:
+    from geometry_msgs.msg import PoseStamped, Vector3Stamped, TwistWithCovarianceStamped
+except Exception:
     PoseStamped = None
     Vector3Stamped = None
     TwistWithCovarianceStamped = None
+
+try:
+    from std_msgs.msg import String as StringMsg
+except Exception:
     StringMsg = None
 
 
@@ -111,6 +117,8 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._last_tcp_diag_log = 0.0
         self._traffic_color_topic = os.getenv("TRAFFIC_COLOR_TOPIC", "/traffic_color")
         self._traffic_color_pub = None
+        # Always mirror to the canonical topic for quick `ros2 topic echo /traffic_color` checks.
+        self._traffic_color_pub_fixed = None
         self._gps_topic = os.getenv("TRAFFIC_GPS_TOPIC", "/gps")
         self._gps_frame_id = os.getenv("TRAFFIC_GPS_FRAME_ID", "map")
         self._gps_pub = None
@@ -150,8 +158,9 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._ros_enabled = (
             rclpy is not None
             and Node is not None
-            and PoseStamped is not None
-            and Vector3Stamped is not None
+            and QoSProfile is not None
+            and QoSHistoryPolicy is not None
+            and QoSReliabilityPolicy is not None
         )
         self._ros_node = None
         self._ros_initialized_here = False
@@ -229,8 +238,10 @@ class threadTrafficDataCollector(ThreadWithStop):
                 depth=1,
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
             )
-            self._ros_node.create_subscription(PoseStamped, self.POS_TOPIC, self._on_pos, sensor_qos)
-            self._ros_node.create_subscription(Vector3Stamped, self.SPEED_TOPIC, self._on_speed, sensor_qos)
+            if PoseStamped is not None:
+                self._ros_node.create_subscription(PoseStamped, self.POS_TOPIC, self._on_pos, sensor_qos)
+            if Vector3Stamped is not None:
+                self._ros_node.create_subscription(Vector3Stamped, self.SPEED_TOPIC, self._on_speed, sensor_qos)
             if self._use_twist_speed_source and TwistWithCovarianceStamped is not None:
                 self._ros_node.create_subscription(
                     TwistWithCovarianceStamped, self.SPEED_TWIST_TOPIC, self._on_speed_twist, sensor_qos
@@ -239,6 +250,10 @@ class threadTrafficDataCollector(ThreadWithStop):
                 self._traffic_color_pub = self._ros_node.create_publisher(
                     StringMsg, self._traffic_color_topic, 10
                 )
+                if self._traffic_color_topic != "/traffic_color":
+                    self._traffic_color_pub_fixed = self._ros_node.create_publisher(
+                        StringMsg, "/traffic_color", 10
+                    )
             if PoseStamped is not None:
                 self._gps_pub = self._ros_node.create_publisher(
                     PoseStamped, self._gps_topic, 10
@@ -264,6 +279,7 @@ class threadTrafficDataCollector(ThreadWithStop):
                 pass
             self._ros_node = None
             self._traffic_color_pub = None
+            self._traffic_color_pub_fixed = None
             self._gps_pub = None
 
         if self._ros_initialized_here and rclpy is not None and rclpy.ok():
@@ -721,7 +737,9 @@ class threadTrafficDataCollector(ThreadWithStop):
         }.get(int(color_value), "unknown")
 
     def _publish_traffic_color(self, payload):
-        if self._ros_node is None or self._traffic_color_pub is None or StringMsg is None:
+        if self._ros_node is None or StringMsg is None:
+            return
+        if self._traffic_color_pub is None and self._traffic_color_pub_fixed is None:
             return
         msg = StringMsg()
         if isinstance(payload, str):
@@ -731,7 +749,10 @@ class threadTrafficDataCollector(ThreadWithStop):
                 msg.data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             except Exception:
                 msg.data = str(payload)
-        self._traffic_color_pub.publish(msg)
+        if self._traffic_color_pub is not None:
+            self._traffic_color_pub.publish(msg)
+        if self._traffic_color_pub_fixed is not None:
+            self._traffic_color_pub_fixed.publish(msg)
 
     def _extract_gps_xy(self, payload):
         if not isinstance(payload, dict):
