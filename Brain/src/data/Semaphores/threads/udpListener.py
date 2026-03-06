@@ -46,6 +46,14 @@ class udpListener(protocol.DatagramProtocol):
         self.logger = logger
         self.debugging = debugging
         self._forward_car = os.getenv("SEMAPHORE_FORWARD_CAR", "1").lower() in ("1", "true", "yes", "y")
+        car_id_filter = os.getenv("SEMAPHORE_CAR_ID", "0").strip()
+        if car_id_filter in ("", "*"):
+            self._car_id_filter = None
+        else:
+            try:
+                self._car_id_filter = int(car_id_filter)
+            except ValueError:
+                self._car_id_filter = None
         self._car_min_period = float(os.getenv("SEMAPHORE_CAR_FORWARD_PERIOD", "0.1"))
         self._last_car_emit_by_id = {}
 
@@ -69,13 +77,19 @@ class udpListener(protocol.DatagramProtocol):
             if not self._forward_car:
                 return
             car_id = dat.get("id")
+            try:
+                car_id_int = int(car_id)
+            except Exception:
+                return
+            if self._car_id_filter is not None and car_id_int != self._car_id_filter:
+                return
             now = time.monotonic()
             if self._car_min_period > 0.0:
-                last_emit = self._last_car_emit_by_id.get(car_id, 0.0)
+                last_emit = self._last_car_emit_by_id.get(car_id_int, 0.0)
                 if (now - last_emit) < self._car_min_period:
                     return
-                self._last_car_emit_by_id[car_id] = now
-            tmp = {"device": "car", "id": dat["id"], "x": dat["x"], "y": dat["y"]}
+                self._last_car_emit_by_id[car_id_int] = now
+            tmp = {"device": "car", "id": car_id_int, "x": dat["x"], "y": dat["y"]}
             if self.debugging:
                 self.logger.info(tmp)
             self.carsSender.send(tmp)

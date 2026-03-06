@@ -124,7 +124,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._gps_pub = None
         self._gps_min_publish_period = float(os.getenv("TRAFFIC_GPS_MIN_PUBLISH_PERIOD", "0.1"))
         self._last_gps_publish = 0.0
-        car_id_filter = os.getenv("TRAFFIC_GPS_CAR_ID", "*").strip()
+        car_id_filter = os.getenv("TRAFFIC_GPS_CAR_ID", "0").strip()
         if car_id_filter in ("", "*"):
             self._gps_car_id_filter = None
         else:

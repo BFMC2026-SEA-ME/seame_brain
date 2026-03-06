@@ -150,17 +150,20 @@ class threadGateway(ThreadWithStop):
                 message = self.queuesList["General"].get_nowait()
             except Empty:
                 message = None
-        if message is None and "Image" in self.queuesList:
-            # 이미지는 최신 1개만 전송하고 나머지는 드롭해 적체 방지
-            latest = None
-            while True:
-                try:
-                    latest = self.queuesList["Image"].get_nowait()
-                except Empty:
-                    break
-            message = latest
         if message is not None:
             self.send(message)
+
+        # Process latest image independently so camera frames are not starved
+        # by a constantly non-empty General queue.
+        if "Image" in self.queuesList:
+            latest_image = None
+            while True:
+                try:
+                    latest_image = self.queuesList["Image"].get_nowait()
+                except Empty:
+                    break
+            if latest_image is not None:
+                self.send(latest_image)
         if not self.queuesList["Config"].empty():
             message2 = self.queuesList["Config"].get()
             if str.lower(message2["Subscribe/Unsubscribe"]) == "subscribe":
