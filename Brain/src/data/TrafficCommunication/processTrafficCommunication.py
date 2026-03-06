@@ -108,6 +108,19 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._last_tcp_diag_log = 0.0
         self._traffic_color_topic = os.getenv("TRAFFIC_COLOR_TOPIC", "/traffic_color")
         self._traffic_color_pub = None
+        self._udp_enabled = os.getenv("TRAFFIC_UDP_SEMAPHORE_ENABLE", "1").lower() in ("1", "true", "yes", "y")
+        self._udp_port = int(os.getenv("TRAFFIC_UDP_SEMAPHORE_PORT", "5007"))
+        self._udp_bind_ip = os.getenv("TRAFFIC_UDP_SEMAPHORE_BIND_IP", "").strip()
+        self._udp_sock = None
+        self._next_udp_retry = 0.0
+        sem_id_filter = os.getenv("TRAFFIC_UDP_SEMAPHORE_ID", "*").strip()
+        if sem_id_filter in ("", "*"):
+            self._udp_semaphore_id_filter = None
+        else:
+            try:
+                self._udp_semaphore_id_filter = int(sem_id_filter)
+            except ValueError:
+                self._udp_semaphore_id_filter = None
 
         self._ros_enabled = (
             rclpy is not None
@@ -148,6 +161,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._flush_to_shared_memory()
         self._flush_to_tcp()
         self._poll_tcp_rx()
+        self._poll_udp_rx()
         if self._verbose_log:
             self._log_waiting_pose()
             self._log_waiting_speed()
@@ -155,6 +169,7 @@ class threadTrafficDataCollector(ThreadWithStop):
 
     def stop(self):
         self._close_tcp()
+        self._close_udp()
         self._close_ros()
         super(threadTrafficDataCollector, self).stop()
 
@@ -295,6 +310,49 @@ class threadTrafficDataCollector(ThreadWithStop):
             self._sock = None
         self._tcp_rx_buffer = ""
 
+    def _close_udp(self):
+        if self._udp_sock is not None:
+            try:
+                self._udp_sock.close()
+            except Exception:
+                pass
+            self._udp_sock = None
+
+    def _bind_udp_if_needed(self):
+        if not self._udp_enabled:
+            return False
+        if self._udp_sock is not None:
+            return True
+
+        now = time.monotonic()
+        if now < self._next_udp_retry:
+            return False
+
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if hasattr(socket, "SO_REUSEPORT"):
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                except OSError:
+                    pass
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.bind((self._udp_bind_ip if self._udp_bind_ip else "", self._udp_port))
+            sock.setblocking(False)
+            self._udp_sock = sock
+            if self._verbose_log:
+                bind_ip = self._udp_bind_ip if self._udp_bind_ip else "0.0.0.0"
+                print(
+                    f"\033[1;97m[ Traffic Communication ] :\033[0m "
+                    f"\033[1;92mINFO\033[0m - UDP semaphore listen "
+                    f"\033[94m{bind_ip}:{self._udp_port}\033[0m"
+                )
+            return True
+        except Exception:
+            self._close_udp()
+            self._next_udp_retry = now + 3.0
+            return False
+
     def _connect_tcp_if_needed(self):
         if not self._tcp_enabled:
             return False
@@ -425,6 +483,40 @@ class threadTrafficDataCollector(ThreadWithStop):
 
         self._consume_tcp_rx_buffer()
 
+    def _poll_udp_rx(self):
+        if not self._udp_enabled:
+            return
+        if not self._bind_udp_if_needed():
+            return
+
+        # Cap packets per cycle to avoid starving other tasks under burst traffic.
+        for _ in range(32):
+            try:
+                readable, _, _ = select.select([self._udp_sock], [], [], 0.0)
+            except Exception:
+                self._close_udp()
+                self._next_udp_retry = time.monotonic() + 3.0
+                return
+
+            if not readable:
+                return
+
+            try:
+                data, _addr = self._udp_sock.recvfrom(8192)  # type: ignore[arg-type]
+            except BlockingIOError:
+                return
+            except Exception:
+                self._close_udp()
+                self._next_udp_retry = time.monotonic() + 3.0
+                return
+
+            try:
+                payload = json.loads(data.decode("utf-8"))
+            except Exception:
+                continue
+
+            self._handle_tcp_payload(payload)
+
     def _consume_tcp_rx_buffer(self):
         if not self._tcp_rx_buffer:
             return
@@ -464,6 +556,19 @@ class threadTrafficDataCollector(ThreadWithStop):
     def _extract_traffic_color(self, payload):
         if not isinstance(payload, dict):
             return None
+
+        # UDP stream payload example:
+        # {"device":"semaphore","id":0,"state":"red","x":1,"y":1}
+        device = str(payload.get("device", "")).strip().lower()
+        if device == "semaphore":
+            if self._udp_semaphore_id_filter is not None:
+                try:
+                    sem_id = int(payload.get("id"))
+                except Exception:
+                    return None
+                if sem_id != self._udp_semaphore_id_filter:
+                    return None
+            return self._coerce_traffic_color(payload.get("state"))
 
         msg_type = str(payload.get("type", "")).strip().lower()
         raw_value = None

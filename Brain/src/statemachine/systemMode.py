@@ -107,7 +107,7 @@ class SystemMode(Enum):
         },
         "traffic_com": {
             "process": {
-                "enabled": False,
+                "enabled": True,
             }
         }
     }
