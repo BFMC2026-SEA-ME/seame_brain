@@ -53,7 +53,7 @@ try:
     from rclpy.node import Node
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from geometry_msgs.msg import PoseStamped, Vector3Stamped, TwistWithCovarianceStamped
-    from std_msgs.msg import Int32
+    from std_msgs.msg import String as StringMsg
 except Exception:
     rclpy = None
     Node = None
@@ -63,7 +63,7 @@ except Exception:
     PoseStamped = None
     Vector3Stamped = None
     TwistWithCovarianceStamped = None
-    Int32 = None
+    StringMsg = None
 
 
 class threadTrafficDataCollector(ThreadWithStop):
@@ -233,9 +233,9 @@ class threadTrafficDataCollector(ThreadWithStop):
                 self._ros_node.create_subscription(
                     TwistWithCovarianceStamped, self.SPEED_TWIST_TOPIC, self._on_speed_twist, sensor_qos
                 )
-            if Int32 is not None:
+            if StringMsg is not None:
                 self._traffic_color_pub = self._ros_node.create_publisher(
-                    Int32, self._traffic_color_topic, 10
+                    StringMsg, self._traffic_color_topic, 10
                 )
             if PoseStamped is not None:
                 self._gps_pub = self._ros_node.create_publisher(
@@ -591,13 +591,70 @@ class threadTrafficDataCollector(ThreadWithStop):
             self._handle_tcp_payload(payload)
 
     def _handle_tcp_payload(self, payload):
-        color_value = self._extract_traffic_color(payload)
-        if color_value is not None:
-            self._publish_traffic_color(color_value)
+        semaphore_payload = self._extract_semaphore_payload(payload)
+        if semaphore_payload is not None:
+            self._publish_traffic_color(semaphore_payload)
 
         gps_xy = self._extract_gps_xy(payload)
         if gps_xy is not None:
             self._publish_gps(gps_xy[0], gps_xy[1])
+
+    def _extract_semaphore_payload(self, payload):
+        if not isinstance(payload, dict):
+            return None
+
+        # UDP stream example:
+        # {"device":"semaphore","id":0,"state":"red","x":1,"y":1}
+        device = str(payload.get("device", "")).strip().lower()
+        has_state = "state" in payload
+        if device == "semaphore" or (has_state and device in ("", "semaphore")):
+            if self._udp_semaphore_id_filter is not None:
+                try:
+                    sem_id = int(payload.get("id"))
+                except Exception:
+                    return None
+                if sem_id != self._udp_semaphore_id_filter:
+                    return None
+            color = self._coerce_traffic_color(payload.get("state"))
+            if color is None:
+                return None
+            return self._build_semaphore_payload(payload, color)
+
+        # Fallback for generic traffic-color payloads from other servers.
+        color = self._extract_traffic_color(payload)
+        if color is None:
+            return None
+        return self._build_semaphore_payload(payload, color)
+
+    def _build_semaphore_payload(self, payload, color_value):
+        state_raw = payload.get("state")
+        if isinstance(state_raw, str) and state_raw.strip():
+            state_text = state_raw.strip().lower()
+        else:
+            state_text = self._color_code_to_state(int(color_value))
+
+        out = {
+            "device": "semaphore",
+            "state": state_text,
+            "color": int(color_value),
+        }
+
+        if "id" in payload:
+            try:
+                out["id"] = int(payload.get("id"))
+            except Exception:
+                pass
+        if "x" in payload:
+            try:
+                out["x"] = float(payload.get("x"))
+            except Exception:
+                pass
+        if "y" in payload:
+            try:
+                out["y"] = float(payload.get("y"))
+            except Exception:
+                pass
+        return out
 
     def _extract_traffic_color(self, payload):
         if not isinstance(payload, dict):
@@ -657,11 +714,22 @@ class threadTrafficDataCollector(ThreadWithStop):
                 return None
         return None
 
-    def _publish_traffic_color(self, color_value):
-        if self._ros_node is None or self._traffic_color_pub is None or Int32 is None:
+    def _color_code_to_state(self, color_value):
+        return {
+            0: "red",
+            1: "yellow",
+            2: "green",
+            3: "off",
+        }.get(int(color_value), "unknown")
+
+    def _publish_traffic_color(self, payload):
+        if self._ros_node is None or self._traffic_color_pub is None or StringMsg is None:
             return
-        msg = Int32()
-        msg.data = int(color_value)
+        msg = StringMsg()
+        try:
+            msg.data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            msg.data = str(payload)
         self._traffic_color_pub.publish(msg)
 
     def _extract_gps_xy(self, payload):

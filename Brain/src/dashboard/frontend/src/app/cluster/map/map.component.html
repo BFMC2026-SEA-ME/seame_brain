@@ -66,11 +66,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
             ></circle>
           </g>
         </ng-container>
+        <ng-container *ngFor="let entry of semaphores | keyvalue">
+          <g
+            class="map-semaphore-overlay"
+            [attr.transform]="getSemaphoreTransform(entry.value)"
+          >
+            <image
+              class="map-semaphore-image"
+              [attr.href]="getSemaphoreImagePath(entry.value.state)"
+              [attr.x]="-semaphoreImageWidth / 2"
+              [attr.y]="-semaphoreImageHeight"
+              [attr.width]="semaphoreImageWidth"
+              [attr.height]="semaphoreImageHeight"
+            ></image>
+          </g>
+        </ng-container>
       </svg>
-    </div>
-
-    <div class="map-semaphores" *ngFor="let entry of semaphores | keyvalue">
-      <app-map-semaphore [id]="'map-semaphore' + entry.key" [state]="entry.value.state" (semaphoreLoaded)="onLoadSemaphore(entry.key)"/>
     </div>
   </div>
 </div>

@@ -31,8 +31,6 @@ import { Subscription } from 'rxjs';
 import { WebSocketService} from '../../webSocket/web-socket.service'
 
 import { CommonModule } from '@angular/common';
-
-import { MapSemaphoreComponent } from './map-semaphore/map-semaphore.component';
  
 interface Semaphore { 
   x: number;
@@ -51,7 +49,7 @@ interface MapNode {
 @Component({
   selector: 'app-map',
   standalone: true,
-  imports: [MapSemaphoreComponent, CommonModule],
+  imports: [CommonModule],
   templateUrl: './map.component.html',
   styleUrl: './map.component.css'
 })
@@ -85,11 +83,9 @@ export class MapComponent {
   private mapHeight: number = 0;
 
   private cursorSize: number = 6; // cursor size in % for width
-  private semaphoreSize: number = 3;
-
-  private semaphoreXOffset: number = 10;
-  private semaphoreYOffset: number = 1.45;
   private hasLocation: boolean = false;
+  public semaphoreImageWidth: number = 34;
+  public semaphoreImageHeight: number = 68;
   
   public semaphores: Map<number, Semaphore> = new Map<number, Semaphore>();
   public graphNodes: MapNode[] = [];
@@ -146,8 +142,21 @@ export class MapComponent {
 
     this.semaphoresAndCarsSubscription = this.webSocketService.receiveSemaphores().subscribe(
       (message) => {
-        const recv = message.value;
-        this.semaphores.set(recv.id, {x: recv.x, y: recv.y, state: recv.state});
+        const recv = (message as any)?.value ?? message;
+        if (!recv || typeof recv !== 'object') {
+          return;
+        }
+        // Semaphores channel also carries car packets; render only semaphore states.
+        if (typeof recv.state !== 'string' || recv.state.length === 0) {
+          return;
+        }
+        const x = Number(recv.x);
+        const y = Number(recv.y);
+        const id = Number(recv.id);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(id)) {
+          return;
+        }
+        this.semaphores.set(id, { x, y, state: recv.state });
       },
     );
 
@@ -214,16 +223,23 @@ export class MapComponent {
     }
   }
 
-  onLoadSemaphore(id: number): void {
-    const semaphore = document.getElementById("map-semaphore" + id) as HTMLElement;
+  public getSemaphoreTransform(semaphore: Semaphore): string {
+    const p = this.graphToSvg(semaphore.x, semaphore.y);
+    return `translate(${p.x} ${p.y})`;
+  }
 
-    if (semaphore) {
-      semaphore.style.position = "absolute";
-      semaphore.style.width = `${this.semaphoreSize}%`;
-      semaphore.style.height = `auto`;
-
-      this.updateMap();
+  public getSemaphoreImagePath(state: string): string {
+    const normalized = String(state ?? '').toLowerCase();
+    if (normalized === 'green') {
+      return '/assets/green-light.svg';
     }
+    if (normalized === 'yellow') {
+      return '/assets/yellow-light.svg';
+    }
+    if (normalized === 'red') {
+      return '/assets/red-light.svg';
+    }
+    return '/assets/all-colors-light.svg';
   }
 
   updateMap(): void {

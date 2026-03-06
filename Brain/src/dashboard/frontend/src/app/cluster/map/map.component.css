@@ -124,3 +124,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     pointer-events: all;
     cursor: pointer;
 }
+
+.map-semaphore-overlay {
+    pointer-events: none;
+}
+
+.map-semaphore-image {
+    pointer-events: none;
+    overflow: visible;
+}
