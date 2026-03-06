@@ -183,6 +183,7 @@ class processDashboard(WorkerProcess):
         self.get_name_and_vals()
         self.messagesAndVals.pop("mainCamera", None)
         self.messagesAndVals.pop("Semaphores", None)
+        self.messagesAndVals.pop("Cars", None)
         # These channels are not rendered in the current dashboard UI.
         # Keep their internal queue flows available for other components, but
         # avoid dashboard subscribe/emit overhead for them.

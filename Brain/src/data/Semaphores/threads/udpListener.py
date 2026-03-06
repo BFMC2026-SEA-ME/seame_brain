@@ -27,7 +27,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 
 import json
-from src.utils.messages.allMessages import Semaphores
+import os
+import time
+from src.utils.messages.allMessages import Cars, Semaphores
 from twisted.internet import protocol
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 
@@ -40,8 +42,12 @@ class udpListener(protocol.DatagramProtocol):
 
     def __init__(self, queuesList, logger, debugging):
         self.semaphoresSender = messageHandlerSender(queuesList, Semaphores)
+        self.carsSender = messageHandlerSender(queuesList, Cars)
         self.logger = logger
         self.debugging = debugging
+        self._forward_car = os.getenv("SEMAPHORE_FORWARD_CAR", "1").lower() in ("1", "true", "yes", "y")
+        self._car_min_period = float(os.getenv("SEMAPHORE_CAR_FORWARD_PERIOD", "0.1"))
+        self._last_car_emit_by_id = {}
 
     def datagramReceived(self, datagram, addr):
         """Specific function for receiving the information. It will select and create different dictionary for each type of data we receive(car or semaphore)
@@ -53,13 +59,29 @@ class udpListener(protocol.DatagramProtocol):
         dat = json.loads(dat)
 
         if dat["device"] == "semaphore":
-            tmp = {"id": dat["id"], "state": dat["state"], "x": dat["x"], "y": dat["y"]}
+            tmp = {"device": "semaphore", "id": dat["id"], "state": dat["state"], "x": dat["x"], "y": dat["y"]}
+            if self.debugging:
+                self.logger.info(tmp)
+            self.semaphoresSender.send(tmp)
+            return
 
-        elif dat["device"] == "car":
-            tmp = {"id": dat["id"], "x": dat["x"], "y": dat["y"]}
-        if self.debugging:
-            self.logger.info(tmp)
-        self.semaphoresSender.send(tmp)
+        if dat["device"] == "car":
+            if not self._forward_car:
+                return
+            car_id = dat.get("id")
+            now = time.monotonic()
+            if self._car_min_period > 0.0:
+                last_emit = self._last_car_emit_by_id.get(car_id, 0.0)
+                if (now - last_emit) < self._car_min_period:
+                    return
+                self._last_car_emit_by_id[car_id] = now
+            tmp = {"device": "car", "id": dat["id"], "x": dat["x"], "y": dat["y"]}
+            if self.debugging:
+                self.logger.info(tmp)
+            self.carsSender.send(tmp)
+            return
+
+        return
 
     def stopListening(self):
         super().stopListening() # type: ignore

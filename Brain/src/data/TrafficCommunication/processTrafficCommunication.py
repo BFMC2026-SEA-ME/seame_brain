@@ -42,7 +42,7 @@ from src.data.TrafficCommunication.useful.sharedMem import sharedMem
 from src.templates.workerprocess import WorkerProcess
 from src.templates.threadwithstop import ThreadWithStop
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
-from src.utils.messages.allMessages import Semaphores
+from src.utils.messages.allMessages import Cars, Semaphores
 try:
     from src.data.TrafficCommunication.threads.threadTrafficCommunication import threadTrafficCommunication
 except Exception:
@@ -147,6 +147,7 @@ class threadTrafficDataCollector(ThreadWithStop):
             except ValueError:
                 self._udp_semaphore_id_filter = None
         self._semaphore_subscriber = None
+        self._cars_subscriber = None
         if self.queues_list is not None:
             try:
                 self._semaphore_subscriber = messageHandlerSubscriber(
@@ -154,6 +155,12 @@ class threadTrafficDataCollector(ThreadWithStop):
                 )
             except Exception:
                 self._semaphore_subscriber = None
+            try:
+                self._cars_subscriber = messageHandlerSubscriber(
+                    self.queues_list, Cars, "fifo", True
+                )
+            except Exception:
+                self._cars_subscriber = None
 
         self._ros_enabled = (
             rclpy is not None
@@ -195,6 +202,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._flush_to_shared_memory()
         self._flush_to_tcp()
         self._poll_tcp_rx()
+        self._poll_cars_queue()
         self._poll_semaphore_queue()
         self._poll_udp_rx()
         if self._verbose_log:
@@ -567,11 +575,22 @@ class threadTrafficDataCollector(ThreadWithStop):
     def _poll_semaphore_queue(self):
         if self._semaphore_subscriber is None:
             return
-        # Semaphores queue carries both `car` and `semaphore` payloads.
-        # Drain a bounded batch so semaphore frames are not starved by car frames.
+        # Semaphores queue carries semaphore payloads.
         for _ in range(64):
             try:
                 payload = self._semaphore_subscriber.receive()
+            except Exception:
+                return
+            if payload is None:
+                return
+            self._handle_tcp_payload(payload)
+
+    def _poll_cars_queue(self):
+        if self._cars_subscriber is None:
+            return
+        for _ in range(64):
+            try:
+                payload = self._cars_subscriber.receive()
             except Exception:
                 return
             if payload is None:
