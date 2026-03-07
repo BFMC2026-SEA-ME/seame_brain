@@ -105,6 +105,8 @@ export class AppComponent implements OnDestroy {
     HIGHWAYEXIT: 'highway_exit',
     PRIORITY: 'priority',
     PEDESTRIAN: 'ped_on_crosswalk',
+    CAR: 'car_ahead',
+    LIGHTS: 'traffic_light',
   };
 
   constructor(private webSocketService: WebSocketService, private clusterService: ClusterService) { }
