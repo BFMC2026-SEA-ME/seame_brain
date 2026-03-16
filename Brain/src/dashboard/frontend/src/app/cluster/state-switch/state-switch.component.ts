@@ -56,8 +56,8 @@ export class StateSwitchComponent implements OnInit {
   private maxSteer: number = 25;
   private minSteer: number = -25;
   private steer: number = 0;
-  private lastSteer: number = 0;
   private steerNumOfSteps: number = 10;
+  private steerUpdatePeriodMs: number = 30;
   private steerIncrement: number = (Math.abs(this.maxSteer) / this.steerNumOfSteps);
   private steerDecrement: number = (Math.abs(this.maxSteer) / this.steerNumOfSteps);
   private steerInterval: any;
@@ -211,38 +211,37 @@ export class StateSwitchComponent implements OnInit {
     this.webSocketService.sendMessageToFlask(`{"Name": "SpeedMotor", "Value": "${Math.round(this.speed*10)}"}`);   
   }
 
+  private clamp(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  private applySteerDelta(delta: number): void {
+    const previousSteer = this.steer;
+    this.steer = this.clamp(this.steer + delta, this.minSteer, this.maxSteer);
+
+    if (this.steer === previousSteer) {
+      return;
+    }
+
+    this.webSocketService.sendMessageToFlask(`{"Name": "SteerMotor", "Value": "${Math.round(this.steer * 10)}"}`);
+  }
+
   private startSteeringRight() {
+    this.stopSteering();
+    this.isSteering = true;
+    this.applySteerDelta(this.steerIncrement); // send immediately on key/button press
     this.steerInterval = setInterval(() => {
-
-      this.steer += this.steerIncrement;
-
-      if (this.steer > this.maxSteer) {
-        this.steer = this.maxSteer;
-      }
-      
-      if (this.lastSteer != this.maxSteer) { 
-        this.webSocketService.sendMessageToFlask(`{"Name": "SteerMotor", "Value": "${Math.round(this.steer*10)}"}`);  
-      }
- 
-      this.lastSteer = this.steer;
-    }, 50);
+      this.applySteerDelta(this.steerIncrement);
+    }, this.steerUpdatePeriodMs);
   }
    
   private startSteeringLeft() {
+    this.stopSteering();
+    this.isSteering = true;
+    this.applySteerDelta(-this.steerIncrement); // send immediately on key/button press
     this.steerInterval = setInterval(() => {
-
-      this.steer -= this.steerIncrement;
-
-      if (this.steer < this.minSteer) {
-        this.steer = this.minSteer;
-      }
-
-      if (this.lastSteer != this.minSteer) { 
-        this.webSocketService.sendMessageToFlask(`{"Name": "SteerMotor", "Value": "${Math.round(this.steer*10)}"}`);
-      }
-        
-      this.lastSteer = this.steer;
-    }, 50);
+      this.applySteerDelta(-this.steerIncrement);
+    }, this.steerUpdatePeriodMs);
   }
 
   private startDecreasingSteer() { 
@@ -267,7 +266,7 @@ export class StateSwitchComponent implements OnInit {
       }
     
       this.webSocketService.sendMessageToFlask(`{"Name": "SteerMotor", "Value": "${Math.round(this.steer*10)}"}`); 
-    }, 50)
+    }, this.steerUpdatePeriodMs)
   }
 
   private speedReset(): void { 

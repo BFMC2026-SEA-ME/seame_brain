@@ -150,14 +150,62 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
   background-color: rgb(45, 54, 58);
 }
 
-.team-logo {
+.team-overlay {
   position: absolute;
-  top: clamp(6px, 1vw, 14px);
-  left: clamp(6px, 1vw, 14px);
-  height: clamp(36px, calc(var(--cluster-width) * 0.06), 68px);
-  width: auto;
+  top: calc(env(safe-area-inset-top, 0px) + clamp(14px, 2vw, 22px));
+  left: clamp(12px, 1.4vw, 20px);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(6px, 1vw, 10px);
   z-index: 6;
   pointer-events: none;
+}
+
+.team-logo {
+  position: relative;
+  width: clamp(180px, calc(var(--cluster-width, 100vw) * 0.192), 384px);
+  height: auto;
+  pointer-events: none;
+  object-fit: contain;
+}
+
+.road-sign-panel {
+  width: clamp(56px, calc(var(--cluster-width, 100vw) * 0.065), 120px);
+  aspect-ratio: 1 / 1;
+  background: #000000;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  padding: clamp(4px, 0.6vw, 8px);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  justify-content: center;
+}
+
+.road-sign-panel.active {
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+.road-sign-image {
+  width: 88%;
+  height: auto;
+  object-fit: contain;
+}
+
+.road-sign-empty {
+  width: 88%;
+  height: 88%;
+}
+
+.road-sign-label {
+  font-size: clamp(8px, 0.75vw, 11px);
+  color: #f3f6fa;
+  letter-spacing: 0.02em;
+  text-align: center;
+  width: 100%;
+  word-break: break-word;
 }
 
 .table { 

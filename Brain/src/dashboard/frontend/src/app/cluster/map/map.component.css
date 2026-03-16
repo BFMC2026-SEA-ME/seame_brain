@@ -82,17 +82,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 }
 
 .map-frame {
-    fill: none;
-    stroke: rgba(255, 255, 255, 0.6);
-    stroke-width: 1.5;
-    vector-effect: non-scaling-stroke;
-    pointer-events: none;
+    display: none;
 }
 
 .map-node {
     fill: rgba(255, 182, 0, 0.9);
-    stroke: rgba(0, 0, 0, 0.6);
-    stroke-width: 0.12;
+    stroke: none;
     pointer-events: none;
 }
 
@@ -100,9 +95,41 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
     fill: rgba(255, 70, 70, 0.95);
 }
 
+.map-node.current {
+    stroke: none;
+}
+
+.map-current-pose {
+    pointer-events: none;
+}
+
+.map-current-pose-image {
+    pointer-events: none;
+    filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.9));
+}
+
+.map-node.checkpoint-pending {
+    fill: rgba(255, 65, 65, 0.98);
+    stroke: none;
+}
+
+.map-node.checkpoint-passed {
+    fill: rgba(40, 210, 90, 0.98);
+    stroke: none;
+}
+
 .map-node-hit {
     fill: transparent;
     stroke: transparent;
     pointer-events: all;
     cursor: pointer;
+}
+
+.map-semaphore-overlay {
+    pointer-events: none;
+}
+
+.map-semaphore-image {
+    pointer-events: none;
+    overflow: visible;
 }

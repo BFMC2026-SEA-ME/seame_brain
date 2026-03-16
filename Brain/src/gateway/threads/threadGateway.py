@@ -84,9 +84,20 @@ class threadGateway(ThreadWithStop):
         Id = message["msgID"]
         To = message["To"]["receiver"]
 
-        # We delete the value from Dictionary
-        del self.sendingList[Owner][Id][To]
-        self.messageApproved.remove((Owner, Id))
+        # Tolerate duplicated/unordered unsubscribe events.
+        owner_dict = self.sendingList.get(Owner)
+        if owner_dict is not None:
+            id_dict = owner_dict.get(Id)
+            if id_dict is not None and To in id_dict:
+                del id_dict[To]
+                if not id_dict:
+                    del owner_dict[Id]
+                if not owner_dict:
+                    del self.sendingList[Owner]
+
+        key = (Owner, Id)
+        if key in self.messageApproved:
+            self.messageApproved.remove(key)
         if self.debugging:
             self.print_list()
 
@@ -115,7 +126,17 @@ class threadGateway(ThreadWithStop):
                     if self.debugging:
                         self.logger.warning("Dropping dead pipe for %s/%s/%s: %r", Owner, Id, element, error)
             for element in to_remove:
-                del self.sendingList[Owner][Id][element]
+                owner_dict = self.sendingList.get(Owner)
+                if owner_dict is None:
+                    continue
+                id_dict = owner_dict.get(Id)
+                if id_dict is None or element not in id_dict:
+                    continue
+                del id_dict[element]
+                if not id_dict:
+                    del owner_dict[Id]
+                if not owner_dict:
+                    del self.sendingList[Owner]
 
     # ====================================================================================
 
@@ -150,23 +171,34 @@ class threadGateway(ThreadWithStop):
                 message = self.queuesList["General"].get_nowait()
             except Empty:
                 message = None
-        if message is None and "Image" in self.queuesList:
-            # 이미지는 최신 1개만 전송하고 나머지는 드롭해 적체 방지
-            latest = None
-            while True:
-                try:
-                    latest = self.queuesList["Image"].get_nowait()
-                except Empty:
-                    break
-            message = latest
         if message is not None:
             self.send(message)
+
+        # Process latest image independently so camera frames are not starved
+        # by a constantly non-empty General queue.
+        if "Image" in self.queuesList:
+            latest_image = None
+            while True:
+                try:
+                    latest_image = self.queuesList["Image"].get_nowait()
+                except Empty:
+                    break
+            if latest_image is not None:
+                self.send(latest_image)
         if not self.queuesList["Config"].empty():
-            message2 = self.queuesList["Config"].get()
-            if str.lower(message2["Subscribe/Unsubscribe"]) == "subscribe":
-                self.subscribe(message2)
-            else:
-                self.unsubscribe(message2)
+            try:
+                message2 = self.queuesList["Config"].get_nowait()
+            except Empty:
+                message2 = None
+            if message2 is not None:
+                try:
+                    if str.lower(message2["Subscribe/Unsubscribe"]) == "subscribe":
+                        self.subscribe(message2)
+                    else:
+                        self.unsubscribe(message2)
+                except Exception as exc:
+                    if self.debugging:
+                        self.logger.warning("Config routing failed: %r", exc)
 
         # print(time.perf_counter_ns())
 

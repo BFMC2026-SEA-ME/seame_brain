@@ -38,6 +38,11 @@ import { CommonModule } from '@angular/common'
 import * as CryptoJS from 'crypto-js';
 import { ClusterService } from './cluster/cluster.service';
 
+interface RoadSignPayload {
+  class_name?: string;
+  source_topic?: string;
+}
+
 @Component({
   selector: 'app-root',
   standalone: true,
@@ -80,9 +85,29 @@ export class AppComponent implements OnDestroy {
   private connectionCheckInterval: any;
   private autoReconnectInterval: any;
   private currentSerialConnectionStateSubscription: Subscription | undefined;
+  private roadSignSubscription: Subscription | undefined;
+  private roadSignHideTimeout: any;
+  private shouldRestoreSession: boolean = false;
   @ViewChild(ClusterComponent) clusterComponent!: ClusterComponent;
   @ViewChild(TableComponent) tableComponent!: TableComponent;
   @ViewChild('stateSwitch') stateSwitchComponent!: StateSwitchComponent;
+  currentRoadSignAsset: string | null = null;
+  currentRoadSignLabel: string = '';
+  currentRoadSignSource: string = '';
+  private readonly roadSignDisplayMs = 2500;
+  private readonly roadSignClassToAsset: { [key: string]: string } = {
+    ONEWAY: 'oneway',
+    HIGHWAYENTRANCE: 'highway_entrance',
+    STOPSIGN: 'stop',
+    ROUNDABOUT: 'roundabout',
+    PARK: 'parking',
+    CROSSWALK: 'crosswalk',
+    HIGHWAYEXIT: 'highway_exit',
+    PRIORITY: 'priority',
+    PEDESTRIAN: 'ped_on_crosswalk',
+    CAR: 'car_ahead',
+    LIGHTS: 'traffic_light',
+  };
 
   constructor(private webSocketService: WebSocketService, private clusterService: ClusterService) { }
 
@@ -94,6 +119,7 @@ export class AppComponent implements OnDestroy {
       (message) => {
         if (message.data == true) {
           this.isAuthenticated = true;
+          this.shouldRestoreSession = true;
 
           // Request current states from backend upon successful login
           this.webSocketService.sendMessageToFlask(`{"Name": "GetCurrentSerialConnectionState"}`);
@@ -127,18 +153,48 @@ export class AppComponent implements OnDestroy {
       }
     );
 
+    this.roadSignSubscription = this.webSocketService.receiveRoadSign().subscribe(
+      (message) => {
+        const payload = ((message as any)?.value ?? message) as RoadSignPayload;
+        const className = String(payload?.class_name ?? '').trim().toUpperCase();
+        const asset = this.roadSignClassToAsset[className];
+        if (!asset) {
+          return;
+        }
+        this.currentRoadSignAsset = `assets/warningLights/${asset}.png`;
+        this.currentRoadSignLabel = className;
+        this.currentRoadSignSource = String(payload?.source_topic ?? '');
+
+        if (this.roadSignHideTimeout) {
+          clearTimeout(this.roadSignHideTimeout);
+        }
+        this.roadSignHideTimeout = setTimeout(() => {
+          this.currentRoadSignAsset = null;
+          this.currentRoadSignLabel = '';
+          this.currentRoadSignSource = '';
+          this.roadSignHideTimeout = null;
+        }, this.roadSignDisplayMs);
+      },
+      (error) => {
+        console.error('Error receiving road sign:', error);
+      }
+    );
+
     // Check connection status on initialization
     this.backendConnected = this.webSocketService.isConnected();
 
     this.connectionStatusSubscription = this.webSocketService.connectionStatus$.subscribe(status => {
       if (status === 'disconnected' || status === 'error') {
         this.backendConnected = false;
-        this.isAuthenticated = false;
         this.startAutoReconnect();
 
       } else if (status === 'connected') {
         this.backendConnected = true;
         this.stopAutoReconnect();
+        if (this.shouldRestoreSession) {
+          this.webSocketService.sendMessageToFlask(`{"Name": "SessionAccess"}`);
+          this.webSocketService.sendMessageToFlask(`{"Name": "GetCurrentSerialConnectionState"}`);
+        }
 
         // if (!this.webSocketService.isConnected()) {
         //   this.webSocketService.reconnect();
@@ -179,6 +235,7 @@ export class AppComponent implements OnDestroy {
 
   logout() {
     this.isAuthenticated = false;
+    this.shouldRestoreSession = false;
     this.webSocketService.sendMessageToFlask(`{"Name": "SessionEnd"}`);
   }
 
@@ -245,6 +302,15 @@ export class AppComponent implements OnDestroy {
 
     if (this.connectionStatusSubscription) {
       this.connectionStatusSubscription.unsubscribe();
+    }
+
+    if (this.roadSignSubscription) {
+      this.roadSignSubscription.unsubscribe();
+    }
+
+    if (this.roadSignHideTimeout) {
+      clearTimeout(this.roadSignHideTimeout);
+      this.roadSignHideTimeout = null;
     }
 
     if (this.heartbeatSubscription) {

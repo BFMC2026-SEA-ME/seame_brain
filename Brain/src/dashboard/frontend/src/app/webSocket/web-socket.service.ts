@@ -67,10 +67,14 @@ export class WebSocketService {
     'CalibRunDone',
     'ImuAck',
     'GlobalPath',
-    'MapNodes'
+    'MapNodes',
+    'GlobalPose',
+    'RoadSign'
   ]);
 
   constructor() {
+    this.clearFrontendCacheOnStartup();
+
     const params = new URLSearchParams(window.location.search);
     const override = params.get('backend') || localStorage.getItem('dashboardBackend');
     const protocol = window.location.protocol === 'https:' ? 'https' : 'http';
@@ -89,8 +93,15 @@ export class WebSocketService {
     }
 
     this.webSocket = new Socket({
-    url: backendUrl,
-    options: {},
+      url: backendUrl,
+      options: {
+        reconnection: true,
+        reconnectionAttempts: 1000000,
+        reconnectionDelay: 500,
+        reconnectionDelayMax: 2000,
+        timeout: 20000,
+        transports: ['websocket', 'polling'],
+      },
     });
     // 카메라 프레임을 ArrayBuffer로 받도록 설정
     this.webSocket.ioSocket.binaryType = 'arraybuffer';
@@ -124,6 +135,20 @@ export class WebSocketService {
     this.webSocket.ioSocket.on('reconnect_error', (error: any) => {
       this.connectionStatusSubject.next('error');
     });
+  }
+
+  private clearFrontendCacheOnStartup(): void {
+    // A stale backend override frequently causes dashboard reconnect loops after restarts.
+    try {
+      localStorage.removeItem('dashboardBackend');
+    } catch (_) {}
+
+    // Remove runtime cache entries if available (best effort).
+    if (typeof window !== 'undefined' && 'caches' in window) {
+      void caches.keys()
+        .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+        .catch(() => {});
+    }
   }
 
   // Method to start connection/handshake with the server
@@ -241,6 +266,14 @@ export class WebSocketService {
 
   receiveMapNodes(): Observable<any> {
     return this.webSocket.fromEvent('MapNodes');
+  }
+
+  receiveGlobalPose(): Observable<any> {
+    return this.webSocket.fromEvent('GlobalPose');
+  }
+
+  receiveRoadSign(): Observable<any> {
+    return this.webSocket.fromEvent('RoadSign');
   }
 
   receiveSteerLimits(): Observable<any> {

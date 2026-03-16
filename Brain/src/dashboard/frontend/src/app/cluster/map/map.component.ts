@@ -31,8 +31,6 @@ import { Subscription } from 'rxjs';
 import { WebSocketService} from '../../webSocket/web-socket.service'
 
 import { CommonModule } from '@angular/common';
-
-import { MapSemaphoreComponent } from './map-semaphore/map-semaphore.component';
  
 interface Semaphore { 
   x: number;
@@ -51,7 +49,7 @@ interface MapNode {
 @Component({
   selector: 'app-map',
   standalone: true,
-  imports: [MapSemaphoreComponent, CommonModule],
+  imports: [CommonModule],
   templateUrl: './map.component.html',
   styleUrl: './map.component.css'
 })
@@ -73,6 +71,11 @@ export class MapComponent {
     maxY: 564
   };
   private readonly mapFitPaddingRatio = 0.06;
+  // Expand node spacing around map center to better match track geometry.
+  private readonly nodeSpreadScaleX = 1.07;
+  private readonly nodeSpreadScaleY = 1.01;
+  // Fine vertical alignment (positive value moves nodes downward).
+  private readonly nodeOffsetSvgY = 20.0;
 
   private screenSize = {"width": 100, "height": 100}; // screen size in %
   private mapSize: number = 50; // map size in % for width
@@ -80,47 +83,92 @@ export class MapComponent {
   private mapHeight: number = 0;
 
   private cursorSize: number = 6; // cursor size in % for width
-  private semaphoreSize: number = 3;
-
-  private semaphoreXOffset: number = 10;
-  private semaphoreYOffset: number = 1.45;
   private hasLocation: boolean = false;
+  public semaphoreImageWidth: number = 17;
+  public semaphoreImageHeight: number = 34;
   
   public semaphores: Map<number, Semaphore> = new Map<number, Semaphore>();
   public graphNodes: MapNode[] = [];
   public pathPoints: string = '';
   public selectedNodeId: string | null = null;
+  public currentPoseSvg: { x: number; y: number } | null = null;
+  public currentPoseYawDeg: number = 0;
+  public currentPoseNodeId: string | null = null;
+  // Change this path to use a different vehicle marker image.
+  public currentPoseImagePath: string = '/assets/Car_top.png';
+  public currentPoseImageWidth: number = 26;
+  public currentPoseImageHeight: number = 26;
+  public checkpointNodeIds: Set<string> = new Set([
+    '11', '25', '33', '39', '46', '60', '73', '76',
+    '156', '103', '130', '117', '140', '90', '81', '150'
+  ]);
+  public passedCheckpointNodeIds: Set<string> = new Set<string>();
 
   private graphBounds: { min_x: number; max_x: number; min_y: number; max_y: number } | null = null;
+  private currentPoseGraph: { x: number; y: number } | null = null;
 
   private locationSubscription: Subscription | undefined;
   private semaphoresAndCarsSubscription: Subscription | undefined;
   private mapNodesSubscription: Subscription | undefined;
-  private globalPathSubscription: Subscription | undefined;
+  private lastPoseUpdateMs: number = 0;
+  private readonly poseUpdatePeriodMs: number = 66;
 
   constructor( private  webSocketService: WebSocketService) { }
   
   ngOnInit()
   {
-    this.locationSubscription = this.webSocketService.receiveLocation().subscribe(
+    this.locationSubscription = this.webSocketService.receiveGlobalPose().subscribe(
       (message) => {
-        if (!this.enableMapPan) {
+        const now = performance.now();
+        if (now - this.lastPoseUpdateMs < this.poseUpdatePeriodMs) {
           return;
         }
+        this.lastPoseUpdateMs = now;
+
+        const payload = (message as any)?.value ?? message;
+        if (!payload) {
+          return;
+        }
+        const locX = Number(payload.x);
+        const locY = Number(payload.y);
+        if (!Number.isFinite(locX) || !Number.isFinite(locY)) {
+          return;
+        }
+        const yaw = Number(payload.yaw);
+        if (Number.isFinite(yaw)) {
+          this.currentPoseYawDeg = (yaw * 180.0) / Math.PI;
+        }
+
         this.hasLocation = true;
-        const locX = parseFloat(message.value.x);
-        const locY = parseFloat(message.value.y);
-        const pct = this.graphToPercent(locX, locY);
-        this.mapX = pct.x;
-        this.mapY = pct.y;
-        this.updateMap()
+        this.currentPoseGraph = { x: locX, y: locY };
+        this.currentPoseSvg = this.graphToSvg(locX, locY);
+        this.currentPoseNodeId = this.findNearestNodeId(locX, locY);
+        this.markCheckpointAsPassed(this.currentPoseNodeId);
+        this.updateMap();
       },
     );
 
     this.semaphoresAndCarsSubscription = this.webSocketService.receiveSemaphores().subscribe(
       (message) => {
-        const recv = message.value;
-        this.semaphores.set(recv.id, {x: recv.x, y: recv.y, state: recv.state});
+        const recv = (message as any)?.value ?? message;
+        if (!recv || typeof recv !== 'object') {
+          return;
+        }
+        // Semaphores channel also carries car packets; render only semaphore states.
+        if (typeof recv.state !== 'string' || recv.state.length === 0) {
+          return;
+        }
+        const x = Number(recv.x);
+        const y = Number(recv.y);
+        const id = Number(recv.id);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(id)) {
+          return;
+        }
+        const prev = this.semaphores.get(id);
+        if (prev && prev.x === x && prev.y === y && prev.state === recv.state) {
+          return;
+        }
+        this.semaphores.set(id, { x, y, state: recv.state });
       },
     );
 
@@ -152,22 +200,14 @@ export class MapComponent {
           this.mapX = centerPct.x;
           this.mapY = centerPct.y;
         }
-        this.updateMap();
-      },
-    );
 
-    this.globalPathSubscription = this.webSocketService.receiveGlobalPath().subscribe(
-      (message) => {
-        const payload = (message as any)?.value ?? message;
-        const points = payload?.points as any[] | undefined;
-        if (!points || points.length === 0) {
-          this.pathPoints = '';
-          return;
+        if (this.currentPoseGraph) {
+          this.currentPoseSvg = this.graphToSvg(this.currentPoseGraph.x, this.currentPoseGraph.y);
+          this.currentPoseNodeId = this.findNearestNodeId(this.currentPoseGraph.x, this.currentPoseGraph.y);
+          this.markCheckpointAsPassed(this.currentPoseNodeId);
         }
-        this.pathPoints = points.map((pt) => {
-          const svg = this.graphToSvg(pt.x, pt.y);
-          return `${svg.x},${svg.y}`;
-        }).join(' ');
+
+        this.updateMap();
       },
     );
     this.webSocketService.sendMessageToFlask('{\"Name\": \"RequestMapNodes\", \"Value\": true}');
@@ -184,9 +224,6 @@ export class MapComponent {
     if (this.mapNodesSubscription) {
       this.mapNodesSubscription.unsubscribe();
     }
-    if (this.globalPathSubscription) {
-      this.globalPathSubscription.unsubscribe();
-    }
   }
 
   onLoadCursor(): void {
@@ -198,16 +235,23 @@ export class MapComponent {
     }
   }
 
-  onLoadSemaphore(id: number): void {
-    const semaphore = document.getElementById("map-semaphore" + id) as HTMLElement;
+  public getSemaphoreTransform(semaphore: Semaphore): string {
+    const p = this.graphToSvg(semaphore.x, semaphore.y);
+    return `translate(${p.x} ${p.y})`;
+  }
 
-    if (semaphore) {
-      semaphore.style.position = "absolute";
-      semaphore.style.width = `${this.semaphoreSize}%`;
-      semaphore.style.height = `auto`;
-
-      this.updateMap();
+  public getSemaphoreImagePath(state: string): string {
+    const normalized = String(state ?? '').toLowerCase();
+    if (normalized === 'green') {
+      return '/assets/green-light.svg';
     }
+    if (normalized === 'yellow') {
+      return '/assets/yellow-light.svg';
+    }
+    if (normalized === 'red') {
+      return '/assets/red-light.svg';
+    }
+    return '/assets/all-colors-light.svg';
   }
 
   updateMap(): void {
@@ -270,17 +314,64 @@ export class MapComponent {
     const maxY = this.mapImageBounds.maxY - padY;
     const fitSpanX = Math.max(0.0001, maxX - minX);
     const fitSpanY = Math.max(0.0001, maxY - minY);
+    let nx: number;
+    let ny: number;
     if (!this.graphBounds) {
-      return {
-        x: minX + (x / 20.67) * fitSpanX,
-        y: minY + (1 - (y / 13.76)) * fitSpanY
-      };
+      nx = x / 20.67;
+      ny = 1 - (y / 13.76);
+    } else {
+      const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
+      const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
+      nx = (x - this.graphBounds.min_x) / spanX;
+      ny = 1 - ((y - this.graphBounds.min_y) / spanY);
     }
-    const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
-    const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
+
+    // Apply center-based spread scaling so spacing between nodes increases.
+    nx = (nx - 0.5) * this.nodeSpreadScaleX + 0.5;
+    ny = (ny - 0.5) * this.nodeSpreadScaleY + 0.5;
+
     return {
-      x: minX + ((x - this.graphBounds.min_x) / spanX) * fitSpanX,
-      y: minY + (1 - ((y - this.graphBounds.min_y) / spanY)) * fitSpanY
+      x: minX + nx * fitSpanX,
+      y: minY + ny * fitSpanY + this.nodeOffsetSvgY
     };
+  }
+
+  private findNearestNodeId(x: number, y: number): string | null {
+    if (this.graphNodes.length === 0) {
+      return null;
+    }
+
+    let nearestNodeId: string | null = null;
+    let nearestDistSq = Number.POSITIVE_INFINITY;
+
+    for (const node of this.graphNodes) {
+      const dx = node.x - x;
+      const dy = node.y - y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq < nearestDistSq) {
+        nearestDistSq = distSq;
+        nearestNodeId = node.id;
+      }
+    }
+
+    return nearestNodeId;
+  }
+
+  public isCheckpointNode(nodeId: string): boolean {
+    return this.checkpointNodeIds.has(String(nodeId));
+  }
+
+  public isPassedCheckpointNode(nodeId: string): boolean {
+    return this.passedCheckpointNodeIds.has(String(nodeId));
+  }
+
+  private markCheckpointAsPassed(nodeId: string | null): void {
+    if (!nodeId) {
+      return;
+    }
+    const key = String(nodeId);
+    if (this.checkpointNodeIds.has(key)) {
+      this.passedCheckpointNodeIds.add(key);
+    }
   }
 }

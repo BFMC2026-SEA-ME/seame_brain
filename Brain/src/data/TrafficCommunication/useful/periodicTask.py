@@ -47,4 +47,10 @@ class periodicTask(task.LoopingCall):
         """
         tosend = self.shrd_mem.get()
         for mem in tosend:
+            # [ADDED][historyData] Keep historyData id as integer in outbound JSON.
+            if mem.get("type") == "historyData" and "value1" in mem:
+                try:
+                    mem["value1"] = int(mem["value1"])
+                except Exception:
+                    pass
             self.tcp_factory.send_data_to_server(mem)

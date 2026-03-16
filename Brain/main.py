@@ -46,9 +46,9 @@ import psutil
 # Process enable flags
 ENABLE_GATEWAY = True
 ENABLE_DASHBOARD = True
-ENABLE_CAMERA = False
-ENABLE_SEMAPHORES = False
-ENABLE_TRAFFIC_COM = False
+ENABLE_CAMERA = True
+ENABLE_SEMAPHORES = True
+ENABLE_TRAFFIC_COM = True
 ENABLE_SERIAL_HANDLER = True
 ENABLE_CMDVELBRIDGE = False
 ENABLE_ACKERMAN = True
@@ -93,6 +93,8 @@ from src.bridge.processCmdbrdige import create_cmd_vel_bridge_process
 from src.bridge.processAckermannBridge import create_ackermann_bridge_process
 from src.bridge.processGlobalPlanningBridge import create_global_planning_bridge_process
 
+ProcessDashboardClass = processDashboard
+
 # ------ New component imports ends here ------#
 
 
@@ -115,7 +117,9 @@ def shutdown_process(process, timeout=1):
 def manage_process_life(process_class, process_instance, process_args, enabled, allProcesses):
     """Start or stop a process based on the enabled flag."""
     if enabled:
-        if process_instance is None:
+        if process_instance is None or not process_instance.is_alive():
+            if process_instance is not None and process_instance in allProcesses:
+                allProcesses.remove(process_instance)
             process_instance = process_class(*process_args)
             allProcesses.append(process_instance)
             process_instance.start()
@@ -267,11 +271,22 @@ try:
     while True:
         message = stateChangeSubscriber.receive()
         if message is not None:
-            modeDictSemaphore = SystemMode[message].value["semaphore"]["process"]
-            modeDictTrafficCom = SystemMode[message].value["traffic_com"]["process"]
+            mode_name = str(message).upper()
+        else:
+            mode_name = StateMachine.get_instance().get_mode().name.upper()
 
-            processSemaphore = manage_process_life(processSemaphores, processSemaphore, [queueList, logging, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
-            processTrafficCom = manage_process_life(processTrafficCommunication, processTrafficCom, [queueList, logging, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
+        modeDictSemaphore = SystemMode[mode_name].value["semaphore"]["process"]
+        modeDictTrafficCom = SystemMode[mode_name].value["traffic_com"]["process"]
+
+        # Safety guard: AUTO mode must always keep semaphore + traffic communication alive
+        # so `/traffic_color` publishing does not stop due to mode config drift.
+        if mode_name == "AUTO":
+            modeDictSemaphore["enabled"] = True
+            modeDictTrafficCom["enabled"] = True
+
+        processSemaphore = manage_process_life(processSemaphores, processSemaphore, [queueList, logging, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
+        processTrafficCom = manage_process_life(processTrafficCommunication, processTrafficCom, [queueList, logging, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
+        processDashboard = manage_process_life(ProcessDashboardClass, processDashboard, [queueList, logging, dashboard_ready, False], ENABLE_DASHBOARD, allProcesses)
 
         blocker.wait(0.1) # 0.1초 간격으로 루프를 텀핑 
 

@@ -136,6 +136,17 @@ class processDashboard(WorkerProcess):
         # serial connection state
         self.serialConnected = False
 
+        # Semaphores stream can include high-rate car updates.
+        # Keep only latest semaphore states and emit in small batches.
+        self._latest_semaphores = {}
+        self._pending_semaphore_ids = set()
+        self._last_semaphore_emit = 0.0
+        self._semaphore_emit_period_s = float(os.getenv("DASHBOARD_SEMAPHORE_EMIT_PERIOD", "0.25"))
+        self._semaphore_drain_limit = int(os.getenv("DASHBOARD_SEMAPHORE_DRAIN_LIMIT", "64"))
+        self._last_camera_emit = 0.0
+        self._camera_emit_period_s = float(os.getenv("DASHBOARD_CAMERA_EMIT_PERIOD", "0.12"))
+        self._no_ack_message_names = {"SteerMotor", "SpeedMotor", "Brake", "Control"}
+
         # configuration
         self.table_state_file = self._get_table_state_path()
 
@@ -146,7 +157,7 @@ class processDashboard(WorkerProcess):
             cors_allowed_origins="*",
             async_mode='eventlet',
             ping_interval=25,
-            ping_timeout=60,
+            ping_timeout=120,
         )
         CORS(self.app, supports_credentials=True)
 
@@ -172,6 +183,16 @@ class processDashboard(WorkerProcess):
         self.get_name_and_vals()
         self.messagesAndVals.pop("mainCamera", None)
         self.messagesAndVals.pop("Semaphores", None)
+        self.messagesAndVals.pop("Cars", None)
+        # These channels are not rendered in the current dashboard UI.
+        # Keep their internal queue flows available for other components, but
+        # avoid dashboard subscribe/emit overhead for them.
+        self.messagesAndVals.pop("ImuData", None)
+        self.messagesAndVals.pop("ImuAck", None)
+        self.messagesAndVals.pop("AliveSignal", None)
+        self.messagesAndVals.pop("CalibPWMData", None)
+        self.messagesAndVals.pop("CalibRunDone", None)
+        self.messagesAndVals.pop("GlobalPath", None)
         self.subscribe()
     
 
@@ -271,10 +292,11 @@ class processDashboard(WorkerProcess):
             else:
                 self.send_message_to_brain(dataName, dataDict)
 
-            try:
-                self.socketio.emit('response', {'data': 'Message received: ' + str(data)}, room=socketId) # type: ignore
-            except Exception as exc:
-                self.logger.error(f"Failed to emit response: {exc}")
+            if dataName not in self._no_ack_message_names:
+                try:
+                    self.socketio.emit('response', {'data': 'Message received: ' + str(data)}, room=socketId) # type: ignore
+                except Exception as exc:
+                    self.logger.error(f"Failed to emit response: {exc}")
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse JSON message: {e}")
             self.socketio.emit('response', {'error': 'Invalid JSON format'}, room=socketId) # type: ignore
@@ -442,11 +464,18 @@ class processDashboard(WorkerProcess):
 
         try:
             for msg, subscriber in self.messages.items():
+                if msg == "Semaphores":
+                    self._drain_and_emit_semaphores(subscriber["obj"])
+                    continue
                 resp = subscriber["obj"].receive()
                 if resp is not None:
                     if msg == "SerialConnectionState":
                         self.serialConnected = resp
                     if msg == "serialCamera":
+                        now = time.monotonic()
+                        if now - self._last_camera_emit < self._camera_emit_period_s:
+                            continue
+                        self._last_camera_emit = now
                         # 바이너리 이미지 전송 (socket.IO로 전송)
                         try:
                             self.socketio.emit(msg, resp, binary=True)
@@ -460,6 +489,48 @@ class processDashboard(WorkerProcess):
             self.logger.error(f"send_continuous_messages failed: {exc}")
 
         eventlet.spawn_after(0.1, self.send_continuous_messages)
+
+    def _drain_and_emit_semaphores(self, subscriber_obj):
+        drained = 0
+        while drained < self._semaphore_drain_limit:
+            resp = subscriber_obj.receive()
+            if resp is None:
+                break
+            drained += 1
+
+            if not isinstance(resp, dict):
+                continue
+            state = resp.get("state")
+            if not isinstance(state, str) or not state:
+                # Ignore non-semaphore packets (e.g. car payloads).
+                continue
+
+            try:
+                sem_id = int(resp.get("id"))
+                x = float(resp.get("x"))
+                y = float(resp.get("y"))
+            except Exception:
+                continue
+
+            normalized = {"id": sem_id, "state": state, "x": x, "y": y}
+            if self._latest_semaphores.get(sem_id) != normalized:
+                self._latest_semaphores[sem_id] = normalized
+                self._pending_semaphore_ids.add(sem_id)
+
+        if not self._pending_semaphore_ids:
+            return
+
+        now = time.monotonic()
+        if now - self._last_semaphore_emit < self._semaphore_emit_period_s:
+            return
+
+        for sem_id in sorted(self._pending_semaphore_ids):
+            payload = self._latest_semaphores.get(sem_id)
+            if payload is None:
+                continue
+            self.socketio.emit("Semaphores", {"value": payload})
+        self._pending_semaphore_ids.clear()
+        self._last_semaphore_emit = now
 
 
     def send_hardware_data_to_frontend(self):

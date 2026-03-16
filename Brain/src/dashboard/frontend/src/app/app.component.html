@@ -53,8 +53,22 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
   </div>
   <!-- Cluster -->
   <div class="cluster-container">
-    <!-- add team logo img -->
-    <img class="team-logo" src="assets/seame-logo.png" alt="SEA:ME team logo" />
+    <div class="team-overlay">
+      <!-- add team logo img -->
+      <img class="team-logo" src="assets/seame-logo.png" alt="SEA:ME team logo" />
+      <div class="road-sign-panel" [class.active]="!!currentRoadSignAsset">
+        <img
+          class="road-sign-image"
+          *ngIf="currentRoadSignAsset; else emptyRoadSign"
+          [src]="currentRoadSignAsset"
+          [alt]="currentRoadSignLabel || 'road sign'"
+        />
+        <ng-template #emptyRoadSign>
+          <div class="road-sign-empty"></div>
+        </ng-template>
+        <div class="road-sign-label" *ngIf="currentRoadSignAsset">{{ currentRoadSignLabel }}</div>
+      </div>
+    </div>
     <app-cluster class="cluster" [cursorRotation]="cursorRotationSliderValue" [carPosition]="carPositionSliderValue"
       [carLeftLaneOn]="carLeftLaneOn" [carRightLaneOn]="carRightLaneOn"></app-cluster>
 
