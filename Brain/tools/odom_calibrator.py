@@ -77,6 +77,30 @@ CUR_WHEEL_DIST_SCALE = float(os.environ.get("WHEEL_DIST_SCALE", "1.042"))
 
 RESULTS_DIR = Path(__file__).parent.parent / "calibration_results"
 
+# ── 현재 odom_generator v_scale 읽기 ─────────────────────────────────────────
+def _get_current_v_scale() -> float:
+    """
+    실행 중인 /wheel_v_imu_odom 노드에서 v_scale 파라미터를 읽는다.
+    읽기 실패 시 1.0 반환 (기본값).
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["ros2", "param", "get", "/wheel_v_imu_odom", "v_scale"],
+            capture_output=True, text=True, timeout=3
+        )
+        # 출력 예: "Double value is: 0.992073"
+        for token in result.stdout.split():
+            try:
+                val = float(token)
+                if 0.1 < val < 10.0:   # 범위 sanity check
+                    return val
+            except ValueError:
+                continue
+    except Exception:
+        pass
+    return 1.0
+
 # WASD 수동 주행 설정
 WASD_SPEED_MS  = 0.30   # W/S 속도 (m/s) — motor cmd ≈ 3
 WASD_STEER_RAD = 0.20   # A/D 조향각 (rad ≈ 11.5°)
@@ -143,18 +167,19 @@ def analyze_straight(poses: List[Pose2D]) -> Dict:
     sug_wd  = CUR_WHEEL_DIST_SCALE * correction
     # v_scale in odom_generator is applied ON TOP of wheel_vel_scale
     # Total effective scale = WHEEL_VEL_SCALE × v_scale
-    # To correct total scale without touching env var:
-    sug_v_scale = 1.0 * correction   # assuming current v_scale = 1.0
+    # Read current v_scale from the running node and multiply by correction.
+    cur_v_scale = _get_current_v_scale()
+    sug_v_scale = cur_v_scale * correction
 
     err_m   = disp - STRAIGHT_DISTANCE_M
     err_pct = (err_m / STRAIGHT_DISTANCE_M) * 100.0
 
-    # Lateral deviation: perpendicular component relative to main travel axis.
-    # If travel is mainly along X → lateral = abs(dy), and vice versa.
-    if math.hypot(dx, dy) > 1e-4:
-        lateral_m = abs(dy) if abs(dx) >= abs(dy) else abs(dx)
-    else:
-        lateral_m = 0.0
+    # Lateral deviation: cross-track error relative to the robot's initial heading.
+    # Projects displacement onto the axis perpendicular to yaw_start.
+    # This is correct regardless of the robot's orientation in the odom frame.
+    yaw_start = poses[0].yaw
+    # cross-track = -dx*sin(yaw) + dy*cos(yaw)
+    lateral_m = abs(-dx * math.sin(yaw_start) + dy * math.cos(yaw_start))
 
     return dict(
         test_type            = "straight",
@@ -170,6 +195,7 @@ def analyze_straight(poses: List[Pose2D]) -> Dict:
         avg_speed_m_s        = round(plen / dur, 4) if dur > 0 else 0.0,
         cur_wheel_vel_scale  = CUR_WHEEL_VEL_SCALE,
         cur_wheel_dist_scale = CUR_WHEEL_DIST_SCALE,
+        cur_v_scale          = round(cur_v_scale, 6),
         correction_factor    = round(correction, 6),
         sug_wheel_vel_scale  = round(sug_wv, 6),
         sug_wheel_dist_scale = round(sug_wd, 6),
@@ -391,9 +417,13 @@ def _print_straight_result(a: Dict):
     print()
     print("  [ 보정 권장값 ]")
     print(f"  보정 계수           : {a['correction_factor']:.6f}")
+    print(f"  현재 v_scale (odom)  : {a['cur_v_scale']:.6f}  ← ros2 param 에서 읽음")
+    print(f"  새 v_scale           : {a['cur_v_scale']:.6f} × {a['correction_factor']:.6f} = {a['sug_v_scale_odom']:.6f}")
+    print()
     print("  ※ 아래 중 하나만 선택 적용하세요 (중복 적용 시 이중 보정 오류)")
     print(f"  ▶  [방법A] export WHEEL_VEL_SCALE={a['sug_wheel_vel_scale']:.6f}")
     print(f"             export WHEEL_DIST_SCALE={a['sug_wheel_dist_scale']:.6f}")
+    print(f"             ros2 param set /wheel_v_imu_odom v_scale 1.0  (v_scale 초기화)")
     print(f"  ▶  [방법B] ros2 param set /wheel_v_imu_odom v_scale {a['sug_v_scale_odom']:.6f}")
     _quality_badge(a["path_error_pct"])
     print(_hr())
@@ -475,13 +505,18 @@ def print_summary(results: List[Dict]):
 # Live display thread (shows odom pose while recording)
 # ══════════════════════════════════════════════════════════════════════════════
 def _live_display(node: "_OdomNode", stop_ev: threading.Event):
+    start: Optional[Pose2D] = None
     while not stop_ev.is_set():
         p = node.latest()
         n = node.sample_count()
         if p:
+            if start is None:
+                start = p
+            dist = math.hypot(p.x - start.x, p.y - start.y)
             print(
-                f"\r  📍 x={p.x:+7.4f} m  y={p.y:+7.4f} m"
-                f"  yaw={math.degrees(p.yaw):+7.2f}°  [{n} samples]   ",
+                f"\r  📍 dist={dist:6.3f} m"
+                f"  (x={p.x:+7.4f}  y={p.y:+7.4f})"
+                f"  yaw={math.degrees(p.yaw):+6.1f}°  [{n}]   ",
                 end="",
                 flush=True,
             )
