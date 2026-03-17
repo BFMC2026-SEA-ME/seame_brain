@@ -31,6 +31,9 @@ import sys
 import math
 import time
 import json
+import select
+import termios
+import tty
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -47,6 +50,12 @@ try:
 except ImportError:
     HAS_ROS = False
     Node = object  # type: ignore
+
+try:
+    from ackermann_msgs.msg import AckermannDriveStamped
+    HAS_ACKERMANN = True
+except ImportError:
+    HAS_ACKERMANN = False
 
 # ── matplotlib (optional, for trajectory plots) ───────────────────────────────
 try:
@@ -67,6 +76,10 @@ CUR_WHEEL_VEL_SCALE  = float(os.environ.get("WHEEL_VEL_SCALE",  "1.042"))
 CUR_WHEEL_DIST_SCALE = float(os.environ.get("WHEEL_DIST_SCALE", "1.042"))
 
 RESULTS_DIR = Path(__file__).parent.parent / "calibration_results"
+
+# WASD 수동 주행 설정
+WASD_SPEED_MS  = 0.30   # W/S 속도 (m/s) — motor cmd ≈ 3
+WASD_STEER_RAD = 0.20   # A/D 조향각 (rad ≈ 11.5°)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Data
@@ -229,7 +242,28 @@ if HAS_ROS:
             self._poses: List[Pose2D] = []
             self._lock   = threading.Lock()
             self.create_subscription(Odometry, "/odom", self._cb, 10)
+
+            # WASD 드라이브 명령 퍼블리셔 (/ackermann_cmd → processAckermannBridge)
+            if HAS_ACKERMANN:
+                self._cmd_pub = self.create_publisher(
+                    AckermannDriveStamped, "/ackermann_cmd", 1
+                )
+                self.get_logger().info("odom_calibrator: /ackermann_cmd 퍼블리셔 준비")
+            else:
+                self._cmd_pub = None
+                self.get_logger().warn("ackermann_msgs 없음 — WASD 주행 비활성")
+
             self.get_logger().info("odom_calibrator: /odom 구독 중")
+
+        def publish_cmd(self, speed_ms: float, steer_rad: float) -> None:
+            """WASD 키 입력을 /ackermann_cmd 로 퍼블리시."""
+            if self._cmd_pub is None:
+                return
+            msg = AckermannDriveStamped()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.drive.speed           = float(speed_ms)
+            msg.drive.steering_angle  = float(steer_rad)
+            self._cmd_pub.publish(msg)
 
         def _cb(self, msg: "Odometry"):
             with self._lock:
@@ -454,25 +488,87 @@ def _live_display(node: "_OdomNode", stop_ev: threading.Event):
         time.sleep(0.1)
 
 # ══════════════════════════════════════════════════════════════════════════════
+# WASD keyboard drive loop
+# ══════════════════════════════════════════════════════════════════════════════
+def _keyboard_drive_loop(node: "_OdomNode", stop_ev: threading.Event) -> None:
+    """
+    터미널 raw 모드에서 WASD 키를 읽어 /ackermann_cmd 를 퍼블리시.
+    stop_ev 가 set 되거나 Enter / Q 키 입력 시 종료.
+
+    조작:
+      W  — 전진      S  — 브레이크(정지)
+      A  — 좌회전    D  — 우회전
+      Space        — 즉시 정지 (속도 + 조향 0)
+      Enter / Q    — 기록 종료
+    """
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+
+    # cbreak 모드: canonical 해제 + echo 해제, OPOST(출력처리)는 유지
+    new_settings = termios.tcgetattr(fd)
+    new_settings[3] &= ~(termios.ICANON | termios.ECHO)   # lflags
+    new_settings[6][termios.VMIN]  = 0
+    new_settings[6][termios.VTIME] = 0
+    termios.tcsetattr(fd, termios.TCSADRAIN, new_settings)
+
+    speed = 0.0
+    steer = 0.0
+
+    try:
+        while not stop_ev.is_set():
+            ready = select.select([sys.stdin], [], [], 0.05)[0]
+            if not ready:
+                continue
+            ch = os.read(fd, 1).decode("utf-8", errors="ignore").lower()
+
+            if   ch == "w":               speed =  WASD_SPEED_MS;  steer = 0.0
+            elif ch == "s":               speed =  0.0;            steer = 0.0
+            elif ch == "a":               steer = -WASD_STEER_RAD
+            elif ch == "d":               steer =  WASD_STEER_RAD
+            elif ch == " ":               speed =  0.0;            steer = 0.0
+            elif ch in ("\r", "\n", "q"): stop_ev.set(); break
+
+            node.publish_cmd(speed, steer)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        node.publish_cmd(0.0, 0.0)   # 차량 정지
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Test runners
 # ══════════════════════════════════════════════════════════════════════════════
 def _record_session(node: "_OdomNode", label: str) -> List[Pose2D]:
-    """Start recording, show live pose, stop on Enter, return poses."""
+    """Start recording, show live pose + WASD control, stop on Enter/Q."""
     node.start_recording()
     print(f"\n  🔴  기록 시작 — {label}")
-    print("  주행 완료 후 Enter 를 누르세요 ...")
+
+    if HAS_ACKERMANN:
+        print("  ┌─ 조작 키 ──────────────────────────────────┐")
+        print("  │  W       전진        S     브레이크(정지)  │")
+        print("  │  A       좌회전      D     우회전          │")
+        print("  │  Space   즉시 정지   Enter/Q  기록 종료    │")
+        print("  └────────────────────────────────────────────┘")
+        print("  ⚠️  Brain 이 AUTO 모드여야 Ackermann 명령이 전달됩니다.")
+    else:
+        print("  ackermann_msgs 없음 — 대시보드로 직접 주행 후 Enter 를 누르세요 ...")
 
     stop_ev = threading.Event()
-    t = threading.Thread(target=_live_display, args=(node, stop_ev), daemon=True)
-    t.start()
 
-    try:
-        input()
-    except EOFError:
-        pass  # stdin closed (e.g. piped input) — treat as Enter
+    # 라이브 위치 표시 스레드
+    disp_t = threading.Thread(target=_live_display, args=(node, stop_ev), daemon=True)
+    disp_t.start()
 
-    stop_ev.set()
-    t.join()
+    if HAS_ACKERMANN:
+        # WASD 루프는 메인 스레드에서 실행 (터미널 raw 모드 필요)
+        _keyboard_drive_loop(node, stop_ev)
+        stop_ev.set()       # Enter/Q 로 루프 종료 시 display 스레드도 중단
+    else:
+        try:
+            input()
+        except EOFError:
+            pass
+        stop_ev.set()
+
+    disp_t.join()
     poses = node.stop_recording()
     print(f"\r  ⏹  기록 완료  —  {len(poses)} samples                          ")
     return poses
