@@ -251,7 +251,8 @@ def analyze_circle(poses: List[Pose2D], direction: str) -> Dict:
     yaw_tot = total_yaw_change(poses)
     dur = poses[-1].t - poses[0].t if len(poses) >= 2 else 0.0
 
-    # Expected: left turn +2π, right turn -2π
+    # Expected total yaw for one closed loop: CCW(left) = +2π, CW(right) = -2π
+    # Valid for any closed loop shape (circle, rectangle, etc.)
     exp_yaw = 2 * math.pi if direction == "left" else -2 * math.pi
     yaw_err_deg = math.degrees(yaw_tot - exp_yaw)
 
@@ -290,7 +291,7 @@ def analyze_circle(poses: List[Pose2D], direction: str) -> Dict:
         diag.append("yaw는 OK지만 위치 오차 → v_scale / WHEEL_VEL_SCALE 미세 조정 필요")
 
     return dict(
-        test_type             = f"circle_{direction}",
+        test_type             = f"loop_{direction}",
         direction             = direction,
         odom_path_m           = round(plen,    5),
         est_radius_m          = round(est_r,   5),
@@ -444,10 +445,10 @@ def print_header():
 
 def print_menu():
     print()
-    print("  ─── 테스트 선택 ───────────────────────")
-    print("  [1]  직선 2m 테스트")
-    print("  [2]  좌회전 원형 테스트  (원점 복귀)")
-    print("  [3]  우회전 원형 테스트  (원점 복귀)")
+    print("  ─── 테스트 선택 ─────────────────────────────────────────")
+    print("  [1]  직선 2m 테스트         ← Step 1: v_scale 보정")
+    print("  [2]  좌회전 루프 테스트     ← Step 2: yaw_scale 보정 (직사각형 코스)")
+    print("  [3]  우회전 루프 테스트     ← Step 2: yaw_scale 보정 (직사각형 코스)")
     print("  [r]  전체 결과 요약 보기")
     print("  [s]  결과 저장  (JSON + 궤적 그래프)")
     print("  [q]  종료")
@@ -466,7 +467,13 @@ def _print_straight_result(a: Dict):
     print(f"  평균 속도           : {a['avg_speed_m_s']:.4f} m/s")
     print(f"  샘플 / 시간         : {a['samples']} ea  /  {a['duration_s']:.1f} s")
     print()
-    print("  [ 보정 권장값 ]")
+    # yaw drift 경고: 직진 중 yaw가 많이 틀어졌으면 disp가 짧아져 보정값이 부정확
+    if abs(a['yaw_drift_during_deg']) > 5.0 or a['lateral_dev_m'] > 0.05:
+        print(f"  ⚠️  경고: 직진 중 yaw 변화 {a['yaw_drift_during_deg']:+.1f}° / 측방 편차 {a['lateral_dev_m']:.3f} m")
+        print("      → 차량이 직선으로 주행하지 않아 보정값이 부정확할 수 있습니다.")
+        print("      → 더 직선에 가깝게 재측정하거나, 여러 번 측정 후 평균을 사용하세요.")
+        print()
+    print("  [ v_scale 보정 권장값 ]  ← Step 1")
     print(f"  보정 계수           : {a['correction_factor']:.6f}")
     print(f"  현재 v_scale (odom)  : {a['cur_v_scale']:.6f}  ← ros2 param 에서 읽음")
     print(f"  새 v_scale           : {a['cur_v_scale']:.6f} × {a['correction_factor']:.6f} = {a['sug_v_scale_odom']:.6f}")
@@ -476,6 +483,8 @@ def _print_straight_result(a: Dict):
     print(f"             export WHEEL_DIST_SCALE={a['sug_wheel_dist_scale']:.6f}")
     print(f"             ros2 param set /wheel_v_imu_odom v_scale 1.0  (v_scale 초기화)")
     print(f"  ▶  [방법B] ros2 param set /wheel_v_imu_odom v_scale {a['sug_v_scale_odom']:.6f}")
+    print()
+    print("  → v_scale 적용 후 루프 테스트(2/3번)로 yaw_scale 보정을 진행하세요.")
     _quality_badge(a["path_error_pct"])
     print(_hr())
 
@@ -483,10 +492,10 @@ def _print_circle_result(a: Dict):
     d = "좌회전" if a["direction"] == "left" else "우회전"
     print()
     print(_hr())
-    print(f"  [ {d} 원형 테스트 결과 ]")
+    print(f"  [ {d} 루프 테스트 결과 (직사각형 코스) ]")
     print(_hr("-"))
     print(f"  오도메트리 경로 길이 : {a['odom_path_m']:.4f} m")
-    print(f"  추정 원 반지름       : {a['est_radius_m']:.4f} m")
+    print(f"  추정 평균 반지름     : {a['est_radius_m']:.4f} m  (참고용)")
     print(f"  위치 폐합 오차       : {a['closure_error_m']:.4f} m")
     print(f"    X 방향 오차        : {a['closure_dx_m']:+.4f} m")
     print(f"    Y 방향 오차        : {a['closure_dy_m']:+.4f} m")
@@ -494,7 +503,7 @@ def _print_circle_result(a: Dict):
     print(f"  yaw 오차             : {a['yaw_error_deg']:+.2f}°")
     print(f"  샘플 / 시간          : {a['samples']} ea  /  {a['duration_s']:.1f} s")
     print()
-    print("  [ Yaw 보정 권장값 ]")
+    print("  [ yaw_scale 보정 권장값 ]  ← Step 2  (v_scale 보정 완료 후 실행)")
     print(f"  현재 yaw_scale       : {a['cur_yaw_scale']:.6f}  ← ros2 param 에서 읽음")
     print(f"  보정 계수            : {a['yaw_correction_factor']:.6f}  (예상 yaw / 측정 yaw)")
     print(f"  새 yaw_scale         : {a['cur_yaw_scale']:.6f} × {a['yaw_correction_factor']:.6f}"
@@ -519,7 +528,7 @@ def print_summary(results: List[Dict]):
     print(_hr("═"))
 
     straights = [r for r in results if r["test_type"] == "straight"]
-    circles   = [r for r in results if "circle" in r["test_type"]]
+    circles   = [r for r in results if "loop" in r["test_type"]]
 
     if straights:
         avg_err   = sum(r["path_error_pct"]      for r in straights) / len(straights)
@@ -532,7 +541,7 @@ def print_summary(results: List[Dict]):
         print(f"    권장 v_scale (odom_gen)   : {avg_v:.6f}")
 
     if circles:
-        print(f"\n  원형 테스트  ({len(circles)} 회)")
+        print(f"\n  루프 테스트 (직사각형)  ({len(circles)} 회)")
         for r in circles:
             tag = "좌" if r["direction"] == "left" else "우"
             print(f"    {tag}회전  폐합 오차 {r['closure_error_m']:.4f} m"
@@ -706,20 +715,24 @@ def run_straight_test(node: "_OdomNode") -> Optional[Dict]:
 
 
 def run_circle_test(node: "_OdomNode", direction: str) -> Optional[Dict]:
-    dstr = "좌회전" if direction == "left" else "우회전"
+    dstr  = "좌회전" if direction == "left" else "우회전"
     print()
     print(_hr())
-    print(f"  [ {dstr} 원형 테스트 ]")
+    print(f"  [ {dstr} 루프 테스트 — 직사각형 코스 ]  ← Step 2: yaw_scale 보정")
     print(_hr("-"))
+    print("  ⚠️  v_scale(직선 테스트) 보정이 완료된 상태에서 실행하세요.")
+    print()
     print("  준비:")
-    print(f"    1) 차량을 출발점에 위치 (방향 기억)")
-    print(f"    2) 대시보드 방향키로 {dstr}하며 원을 그려 출발점으로 복귀")
-    print( "    3) 원점 복귀 완료 후 Enter → 기록 종료")
+    print(f"    1) 차량을 출발점에 위치 (위치·방향 기억)")
+    print(f"    2) 직사각형 코스를 {dstr}으로 한 바퀴 주행")
+    print( "       예) 직진 → 90° 회전 → 직진 → 90° 회전 → 직진 → 90° 회전 → 직진 → 90° 회전")
+    print( "       * 총 yaw 변화 ≈ ±360°  (코스 크기는 무관)")
+    print(f"    3) 출발점 복귀 후 Enter → 기록 종료")
     print()
     print("  Enter 를 누르면 기록을 시작합니다 ...")
     input()
 
-    poses = _record_session(node, f"{dstr} 원 주행 → 원점 복귀 후 → Enter")
+    poses = _record_session(node, f"{dstr} 루프 주행 → 출발점 복귀 후 → Enter")
 
     if len(poses) < 10:
         print(f"  ⚠️  데이터 부족 ({len(poses)} samples). /odom 토픽이 퍼블리시되는지 확인하세요.")
