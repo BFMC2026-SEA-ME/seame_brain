@@ -24,6 +24,36 @@ v_scale / WHEEL_VEL_SCALE / WHEEL_DIST_SCALE 보정값을 계산합니다.
     - WHEEL_DIST_SCALE (env, threadRead.py → /wheel_encoder distance)
     - v_scale          (ROS param, odom_generator.py → /odom)
       * 총 스케일 = WHEEL_VEL_SCALE × v_scale
+    - yaw_scale        (ROS param, odom_generator.py → /odom yaw)
+      * IMU angular velocity 에 곱해지는 배수. 원형 테스트로 보정.
+
+권장값 적용 방법:
+
+  [거리 보정 — 직선 테스트 후]
+    방법 A: 환경 변수 수정 (threadRead.py 적용)
+      export WHEEL_VEL_SCALE=<sug_wheel_vel_scale>
+      export WHEEL_DIST_SCALE=<sug_wheel_dist_scale>
+      ros2 param set /wheel_v_imu_odom v_scale 1.0   # v_scale 초기화
+      # → Brain 재시작 후 반영
+
+    방법 B: ROS 파라미터만 수정 (odom_generator 적용)
+      ros2 param set /wheel_v_imu_odom v_scale <sug_v_scale>
+      # → 즉시 반영 (재시작 불필요), 단 재시작 시 초기화됨
+      # → 영구 적용하려면 odom_generator.py 의 기본값을 직접 수정:
+      #    self.declare_parameter('v_scale', <sug_v_scale>)
+
+    ※ 방법 A 와 B 를 동시에 적용하면 이중 보정됩니다. 하나만 선택.
+
+  [yaw 보정 — 원형 테스트 후]
+    # 즉시 적용 (노드 재시작 전까지 유효):
+    ros2 param set /wheel_v_imu_odom yaw_scale <sug_yaw_scale>
+
+    # 영구 적용 — odom_generator.py 의 기본값을 직접 수정:
+    #   self.declare_parameter('yaw_scale', <sug_yaw_scale>)
+
+    # 좌/우 원형 테스트를 모두 수행한 경우 평균값을 사용하는 것을 권장.
+    # 좌/우 권장값 차이가 0.05 이상이면 스티어링 비대칭 또는
+    # IMU 편향을 먼저 점검하세요.
 """
 
 import os
@@ -77,16 +107,16 @@ CUR_WHEEL_DIST_SCALE = float(os.environ.get("WHEEL_DIST_SCALE", "1.042"))
 
 RESULTS_DIR = Path(__file__).parent.parent / "calibration_results"
 
-# ── 현재 odom_generator v_scale 읽기 ─────────────────────────────────────────
-def _get_current_v_scale() -> float:
+# ── 현재 odom_generator 파라미터 읽기 ────────────────────────────────────────
+def _get_ros_param(param_name: str) -> float:
     """
-    실행 중인 /wheel_v_imu_odom 노드에서 v_scale 파라미터를 읽는다.
+    실행 중인 /wheel_v_imu_odom 노드에서 파라미터를 읽는다.
     읽기 실패 시 1.0 반환 (기본값).
     """
     import subprocess
     try:
         result = subprocess.run(
-            ["ros2", "param", "get", "/wheel_v_imu_odom", "v_scale"],
+            ["ros2", "param", "get", "/wheel_v_imu_odom", param_name],
             capture_output=True, text=True, timeout=3
         )
         # 출력 예: "Double value is: 0.992073"
@@ -100,6 +130,12 @@ def _get_current_v_scale() -> float:
     except Exception:
         pass
     return 1.0
+
+def _get_current_v_scale() -> float:
+    return _get_ros_param("v_scale")
+
+def _get_current_yaw_scale() -> float:
+    return _get_ros_param("yaw_scale")
 
 # WASD 수동 주행 설정
 WASD_SPEED_MS  = 0.30   # W/S 속도 (m/s) — motor cmd ≈ 3
@@ -222,6 +258,16 @@ def analyze_circle(poses: List[Pose2D], direction: str) -> Dict:
     # Estimate circle radius: if one full circle, circumference ≈ path_length
     est_r = plen / (2 * math.pi) if plen > 1e-4 else 0.0
 
+    # Yaw scale correction:
+    #   odom accumulated yaw_tot should equal exp_yaw (±2π).
+    #   correction = exp_yaw / yaw_tot  →  new_yaw_scale = cur × correction
+    cur_yaw_scale = _get_current_yaw_scale()
+    if abs(yaw_tot) > 0.1:
+        yaw_correction = exp_yaw / yaw_tot
+    else:
+        yaw_correction = 1.0
+    sug_yaw_scale = cur_yaw_scale * yaw_correction
+
     # Diagnosis
     diag: List[str] = []
     if closure > 0.10:
@@ -232,29 +278,34 @@ def analyze_circle(poses: List[Pose2D], direction: str) -> Dict:
     if abs(yaw_err_deg) > 5.0:
         diag.append(
             f"yaw 누적 오차 큼 ({yaw_err_deg:+.1f}°) "
-            "→ IMU / yaw 추정 점검 필요"
+            f"→ yaw_scale 보정 필요 (권장값: {sug_yaw_scale:.6f})"
         )
     if closure <= 0.05 and abs(yaw_err_deg) <= 3.0:
         diag.append("원형 폐합 양호 ✅  현재 파라미터 적절")
     if closure <= 0.05 and abs(yaw_err_deg) > 3.0:
-        diag.append("위치는 닫히지만 yaw 누적 오차 → IMU yaw_offset_rad 조정 고려")
+        diag.append(
+            f"위치는 닫히지만 yaw 누적 오차 → yaw_scale 보정 권장 ({sug_yaw_scale:.6f})"
+        )
     if closure > 0.05 and abs(yaw_err_deg) <= 3.0:
         diag.append("yaw는 OK지만 위치 오차 → v_scale / WHEEL_VEL_SCALE 미세 조정 필요")
 
     return dict(
-        test_type        = f"circle_{direction}",
-        direction        = direction,
-        odom_path_m      = round(plen,    5),
-        est_radius_m     = round(est_r,   5),
-        closure_error_m  = round(closure, 5),
-        closure_dx_m     = round(dx,      5),
-        closure_dy_m     = round(dy,      5),
-        total_yaw_deg    = round(math.degrees(yaw_tot), 3),
-        expected_yaw_deg = round(math.degrees(exp_yaw), 3),
-        yaw_error_deg    = round(yaw_err_deg, 3),
-        duration_s       = round(dur, 3),
-        samples          = len(poses),
-        diagnosis        = diag,
+        test_type             = f"circle_{direction}",
+        direction             = direction,
+        odom_path_m           = round(plen,    5),
+        est_radius_m          = round(est_r,   5),
+        closure_error_m       = round(closure, 5),
+        closure_dx_m          = round(dx,      5),
+        closure_dy_m          = round(dy,      5),
+        total_yaw_deg         = round(math.degrees(yaw_tot), 3),
+        expected_yaw_deg      = round(math.degrees(exp_yaw), 3),
+        yaw_error_deg         = round(yaw_err_deg, 3),
+        duration_s            = round(dur, 3),
+        samples               = len(poses),
+        cur_yaw_scale         = round(cur_yaw_scale, 6),
+        yaw_correction_factor = round(yaw_correction, 6),
+        sug_yaw_scale         = round(sug_yaw_scale, 6),
+        diagnosis             = diag,
     )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -443,6 +494,13 @@ def _print_circle_result(a: Dict):
     print(f"  yaw 오차             : {a['yaw_error_deg']:+.2f}°")
     print(f"  샘플 / 시간          : {a['samples']} ea  /  {a['duration_s']:.1f} s")
     print()
+    print("  [ Yaw 보정 권장값 ]")
+    print(f"  현재 yaw_scale       : {a['cur_yaw_scale']:.6f}  ← ros2 param 에서 읽음")
+    print(f"  보정 계수            : {a['yaw_correction_factor']:.6f}  (예상 yaw / 측정 yaw)")
+    print(f"  새 yaw_scale         : {a['cur_yaw_scale']:.6f} × {a['yaw_correction_factor']:.6f}"
+          f" = {a['sug_yaw_scale']:.6f}")
+    print(f"  ▶  ros2 param set /wheel_v_imu_odom yaw_scale {a['sug_yaw_scale']:.6f}")
+    print()
     print("  [ 진단 ]")
     for msg in a["diagnosis"]:
         print(f"    → {msg}")
@@ -478,7 +536,19 @@ def print_summary(results: List[Dict]):
         for r in circles:
             tag = "좌" if r["direction"] == "left" else "우"
             print(f"    {tag}회전  폐합 오차 {r['closure_error_m']:.4f} m"
-                  f"  /  yaw 오차 {r['yaw_error_deg']:+.2f}°")
+                  f"  /  yaw 오차 {r['yaw_error_deg']:+.2f}°"
+                  f"  /  권장 yaw_scale {r['sug_yaw_scale']:.6f}")
+
+        avg_yaw = sum(r["sug_yaw_scale"] for r in circles) / len(circles)
+        left_r  = next((r for r in circles if r["direction"] == "left"),  None)
+        right_r = next((r for r in circles if r["direction"] == "right"), None)
+        if left_r and right_r:
+            asymmetry = abs(left_r["sug_yaw_scale"] - right_r["sug_yaw_scale"])
+            if asymmetry > 0.05:
+                print(f"\n  ⚠️  좌/우 yaw_scale 차이 {asymmetry:.4f} 큼"
+                      " → 스티어링 비대칭 또는 IMU 편향 의심")
+        print(f"\n  권장 yaw_scale (평균) : {avg_yaw:.6f}")
+        print(f"  ▶  ros2 param set /wheel_v_imu_odom yaw_scale {avg_yaw:.6f}")
 
     if straights:
         avg_scale = sum(r["sug_wheel_vel_scale"] for r in straights) / len(straights)
