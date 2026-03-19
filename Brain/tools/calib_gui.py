@@ -194,7 +194,8 @@ def on_reset_origin():
     # odom_generator 재시작 → 적분값이 0,0,0으로 초기화됨
     try:
         subprocess.run(["pkill", "-f", "odom_generator.py"], capture_output=True, timeout=3)
-        time.sleep(0.8)  # 재시작 대기
+        time.sleep(0.8)  # 종료 대기
+        start_odom_generator()
         msg = "odom_generator 재시작 완료. 현재 위치가 원점(0,0,0)으로 초기화됐습니다."
     except Exception as e:
         msg = f"재시작 실패: {e}"
@@ -273,9 +274,10 @@ def on_restart_node():
     try:
         subprocess.run(["pkill", "-f", "odom_generator.py"], capture_output=True, timeout=3)
         time.sleep(0.5)
+        start_odom_generator()
         emit("restart_result", {
             "success": True,
-            "msg": "odom_generator 종료 완료. 런치 파일이 자동 재시작합니다.",
+            "msg": "odom_generator 재시작 완료.",
         })
     except Exception as e:
         emit("restart_result", {"success": False, "msg": str(e)})
@@ -1157,6 +1159,22 @@ def index():
 # ══════════════════════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════════════════════
+def start_odom_generator():
+    """odom_generator.py를 백그라운드 프로세스로 시작."""
+    if not ODOM_GEN_PATH.exists():
+        print(f"[경고] odom_generator.py 없음: {ODOM_GEN_PATH}")
+        return None
+    env = os.environ.copy()
+    proc = subprocess.Popen(
+        ["python3", str(ODOM_GEN_PATH)],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    print(f"✅  odom_generator 시작 (PID={proc.pid})")
+    return proc
+
+
 def _odom_status_loop():
     """0.5초마다 /odom 수신 상태를 모든 클라이언트에 브로드캐스트."""
     while True:
@@ -1188,6 +1206,11 @@ def main():
         print("✅  ROS 2 초기화 완료")
 
     threading.Thread(target=_odom_status_loop, daemon=True).start()
+
+    # odom_generator 자동 시작 (이미 실행 중이면 pkill 후 재시작)
+    subprocess.run(["pkill", "-f", "odom_generator.py"], capture_output=True)
+    time.sleep(0.5)
+    start_odom_generator()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     print(f"🌐  브라우저에서 열기: http://localhost:{PORT}")
