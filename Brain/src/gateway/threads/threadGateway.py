@@ -27,6 +27,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 
 from src.templates.threadwithstop import ThreadWithStop
+from src.utils.messages.allMessages import serialCamera
 import time
 from queue import Empty
 
@@ -138,6 +139,9 @@ class threadGateway(ThreadWithStop):
                 if not owner_dict:
                     del self.sendingList[Owner]
 
+    def _has_subscribers(self, owner, msg_id):
+        return (owner, msg_id) in self.messageApproved
+
     # ====================================================================================
 
     # Function for debugging:
@@ -177,14 +181,15 @@ class threadGateway(ThreadWithStop):
         # Process latest image independently so camera frames are not starved
         # by a constantly non-empty General queue.
         if "Image" in self.queuesList:
-            latest_image = None
-            while True:
-                try:
-                    latest_image = self.queuesList["Image"].get_nowait()
-                except Empty:
-                    break
-            if latest_image is not None:
-                self.send(latest_image)
+            if self._has_subscribers(serialCamera.Owner.value, serialCamera.msgID.value):
+                latest_image = None
+                while True:
+                    try:
+                        latest_image = self.queuesList["Image"].get_nowait()
+                    except Empty:
+                        break
+                if latest_image is not None:
+                    self.send(latest_image)
         if not self.queuesList["Config"].empty():
             try:
                 message2 = self.queuesList["Config"].get_nowait()

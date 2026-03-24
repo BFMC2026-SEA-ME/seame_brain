@@ -37,6 +37,7 @@ import eventlet
 import os
 import time
 import glob
+from queue import Empty
 
 
 from flask import Flask, request
@@ -47,7 +48,7 @@ from enum import Enum
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 from src.templates.workerprocess import WorkerProcess
-from src.utils.messages.allMessages import Semaphores, serialCamera
+from src.utils.messages.allMessages import Semaphores
 from src.statemachine.stateMachine import StateMachine
 from src.dashboard.components.calibration import Calibration
 from src.dashboard.components.ip_manger import IpManager
@@ -148,7 +149,6 @@ class processDashboard(WorkerProcess):
         self._camera_loop_period_s = float(os.getenv("DASHBOARD_CAMERA_LOOP_PERIOD", "0.02"))
         self._latest_camera_frame = None
         self._camera_frame_dirty = False
-        self.cameraSubscriber = None
         self._no_ack_message_names = {"SteerMotor", "SpeedMotor", "Brake", "Control"}
 
         # configuration
@@ -248,7 +248,6 @@ class processDashboard(WorkerProcess):
 
         subscriber = messageHandlerSubscriber(self.queueList, Semaphores, "fifo", True)
         self.messages["Semaphores"] = {"obj": subscriber}
-        self.cameraSubscriber = messageHandlerSubscriber(self.queueList, serialCamera, "lastOnly", True)
 
 
     def get_name_and_vals(self):
@@ -492,11 +491,7 @@ class processDashboard(WorkerProcess):
             return
 
         try:
-            if self.cameraSubscriber is not None:
-                resp = self.cameraSubscriber.receive()
-                if resp is not None:
-                    self._latest_camera_frame = resp
-                    self._camera_frame_dirty = True
+            self._drain_camera_queue()
 
             now = time.monotonic()
             if (
@@ -515,6 +510,31 @@ class processDashboard(WorkerProcess):
             self.logger.error(f"send_camera_messages failed: {exc}")
 
         eventlet.spawn_after(self._camera_loop_period_s, self.send_camera_messages)
+
+    def _drain_camera_queue(self):
+        """Read the latest camera payload directly from the Image queue."""
+        image_queue = self.queueList.get("Image")
+        if image_queue is None:
+            return
+
+        latest_payload = None
+        while True:
+            try:
+                message = image_queue.get_nowait()
+            except Empty:
+                break
+            except Exception:
+                break
+
+            if not isinstance(message, dict):
+                continue
+            payload = message.get("msgValue")
+            if payload is not None:
+                latest_payload = payload
+
+        if latest_payload is not None:
+            self._latest_camera_frame = latest_payload
+            self._camera_frame_dirty = True
 
     def _drain_and_emit_semaphores(self, subscriber_obj):
         drained = 0
