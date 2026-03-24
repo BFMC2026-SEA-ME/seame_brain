@@ -47,7 +47,7 @@ from enum import Enum
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 from src.templates.workerprocess import WorkerProcess
-from src.utils.messages.allMessages import Semaphores
+from src.utils.messages.allMessages import Semaphores, serialCamera
 from src.statemachine.stateMachine import StateMachine
 from src.dashboard.components.calibration import Calibration
 from src.dashboard.components.ip_manger import IpManager
@@ -145,6 +145,10 @@ class processDashboard(WorkerProcess):
         self._semaphore_drain_limit = int(os.getenv("DASHBOARD_SEMAPHORE_DRAIN_LIMIT", "64"))
         self._last_camera_emit = 0.0
         self._camera_emit_period_s = float(os.getenv("DASHBOARD_CAMERA_EMIT_PERIOD", "0.12"))
+        self._camera_loop_period_s = float(os.getenv("DASHBOARD_CAMERA_LOOP_PERIOD", "0.02"))
+        self._latest_camera_frame = None
+        self._camera_frame_dirty = False
+        self.cameraSubscriber = None
         self._no_ack_message_names = {"SteerMotor", "SpeedMotor", "Brake", "Control"}
 
         # configuration
@@ -182,6 +186,7 @@ class processDashboard(WorkerProcess):
         """Initialize message handling systems."""
         self.get_name_and_vals()
         self.messagesAndVals.pop("mainCamera", None)
+        self.messagesAndVals.pop("serialCamera", None)
         self.messagesAndVals.pop("Semaphores", None)
         self.messagesAndVals.pop("Cars", None)
         # These channels are not rendered in the current dashboard UI.
@@ -210,6 +215,7 @@ class processDashboard(WorkerProcess):
 
         eventlet.spawn(self.update_hardware_data)
         eventlet.spawn(self.send_continuous_messages)
+        eventlet.spawn(self.send_camera_messages)
         eventlet.spawn(self.send_hardware_data_to_frontend)
         eventlet.spawn(self.send_heartbeat)
 
@@ -242,6 +248,7 @@ class processDashboard(WorkerProcess):
 
         subscriber = messageHandlerSubscriber(self.queueList, Semaphores, "fifo", True)
         self.messages["Semaphores"] = {"obj": subscriber}
+        self.cameraSubscriber = messageHandlerSubscriber(self.queueList, serialCamera, "lastOnly", True)
 
 
     def get_name_and_vals(self):
@@ -471,24 +478,43 @@ class processDashboard(WorkerProcess):
                 if resp is not None:
                     if msg == "SerialConnectionState":
                         self.serialConnected = resp
-                    if msg == "serialCamera":
-                        now = time.monotonic()
-                        if now - self._last_camera_emit < self._camera_emit_period_s:
-                            continue
-                        self._last_camera_emit = now
-                        # 바이너리 이미지 전송 (socket.IO로 전송)
-                        try:
-                            self.socketio.emit(msg, resp, binary=True)
-                        except Exception:
-                            self.socketio.emit(msg, {"value": resp})
-                    else:
-                        self.socketio.emit(msg, {"value": resp})
+                    self.socketio.emit(msg, {"value": resp})
                     if self.debugging:
                         self.logger.info(f"{msg}: {resp}")
         except Exception as exc:
             self.logger.error(f"send_continuous_messages failed: {exc}")
 
         eventlet.spawn_after(0.1, self.send_continuous_messages)
+
+    def send_camera_messages(self):
+        """Send camera frames independently so telemetry can continue under video backpressure."""
+        if not self.running:
+            return
+
+        try:
+            if self.cameraSubscriber is not None:
+                resp = self.cameraSubscriber.receive()
+                if resp is not None:
+                    self._latest_camera_frame = resp
+                    self._camera_frame_dirty = True
+
+            now = time.monotonic()
+            if (
+                self._latest_camera_frame is not None
+                and self._camera_frame_dirty
+                and now - self._last_camera_emit >= self._camera_emit_period_s
+            ):
+                payload = self._latest_camera_frame
+                self._camera_frame_dirty = False
+                self._last_camera_emit = now
+                try:
+                    self.socketio.emit("serialCamera", payload, binary=True)
+                except Exception:
+                    self.socketio.emit("serialCamera", {"value": payload})
+        except Exception as exc:
+            self.logger.error(f"send_camera_messages failed: {exc}")
+
+        eventlet.spawn_after(self._camera_loop_period_s, self.send_camera_messages)
 
     def _drain_and_emit_semaphores(self, subscriber_obj):
         drained = 0
