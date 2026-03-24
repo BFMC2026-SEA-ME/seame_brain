@@ -27,6 +27,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 
 from src.templates.threadwithstop import ThreadWithStop
+from src.utils.messages.allMessages import serialCamera
 import time
 from queue import Empty
 
@@ -47,6 +48,10 @@ class threadGateway(ThreadWithStop):
         self.sendingList = {}
         self.queuesList = queueList
         self.messageApproved = []
+        self._critical_batch_limit = 32
+        self._warning_batch_limit = 32
+        self._general_batch_limit = 128
+        self._config_batch_limit = 32
 
     # =================================== SUBSCRIBE ======================================
 
@@ -138,6 +143,51 @@ class threadGateway(ThreadWithStop):
                 if not owner_dict:
                     del self.sendingList[Owner]
 
+    def _has_subscribers(self, owner, msg_id):
+        return (owner, msg_id) in self.messageApproved
+
+    def _drain_queue(self, queue_name, limit):
+        processed = 0
+        queue_ref = self.queuesList.get(queue_name)
+        if queue_ref is None:
+            return 0
+
+        while processed < limit:
+            try:
+                message = queue_ref.get_nowait()
+            except Empty:
+                break
+
+            self.send(message)
+            processed += 1
+
+        return processed
+
+    def _process_config_messages(self, limit):
+        processed = 0
+        queue_ref = self.queuesList.get("Config")
+        if queue_ref is None:
+            return 0
+
+        while processed < limit:
+            try:
+                message = queue_ref.get_nowait()
+            except Empty:
+                break
+
+            try:
+                if str.lower(message["Subscribe/Unsubscribe"]) == "subscribe":
+                    self.subscribe(message)
+                else:
+                    self.unsubscribe(message)
+            except Exception as exc:
+                if self.debugging:
+                    self.logger.warning("Config routing failed: %r", exc)
+
+            processed += 1
+
+        return processed
+
     # ====================================================================================
 
     # Function for debugging:
@@ -152,53 +202,23 @@ class threadGateway(ThreadWithStop):
         """This function will take the messages in priority order form the queues.\n
         the prioirty is: Critical > Warning > General
         """
-        
-        # while self._running:
-        message = None
-        # We are using "elif" because we are processing one message at a time.
-        # We work with the queues in the priority order( We start from the high priority to low priority)
-        try:
-            message = self.queuesList["Critical"].get_nowait()
-        except Empty:
-            message = None
-        if message is None:
-            try:
-                message = self.queuesList["Warning"].get_nowait()
-            except Empty:
-                message = None
-        if message is None:
-            try:
-                message = self.queuesList["General"].get_nowait()
-            except Empty:
-                message = None
-        if message is not None:
-            self.send(message)
+        self._drain_queue("Critical", self._critical_batch_limit)
+        self._drain_queue("Warning", self._warning_batch_limit)
+        self._drain_queue("General", self._general_batch_limit)
 
         # Process latest image independently so camera frames are not starved
         # by a constantly non-empty General queue.
         if "Image" in self.queuesList:
-            latest_image = None
-            while True:
-                try:
-                    latest_image = self.queuesList["Image"].get_nowait()
-                except Empty:
-                    break
-            if latest_image is not None:
-                self.send(latest_image)
-        if not self.queuesList["Config"].empty():
-            try:
-                message2 = self.queuesList["Config"].get_nowait()
-            except Empty:
-                message2 = None
-            if message2 is not None:
-                try:
-                    if str.lower(message2["Subscribe/Unsubscribe"]) == "subscribe":
-                        self.subscribe(message2)
-                    else:
-                        self.unsubscribe(message2)
-                except Exception as exc:
-                    if self.debugging:
-                        self.logger.warning("Config routing failed: %r", exc)
+            if self._has_subscribers(serialCamera.Owner.value, serialCamera.msgID.value):
+                latest_image = None
+                while True:
+                    try:
+                        latest_image = self.queuesList["Image"].get_nowait()
+                    except Empty:
+                        break
+                if latest_image is not None:
+                    self.send(latest_image)
+        self._process_config_messages(self._config_batch_limit)
 
         # print(time.perf_counter_ns())
 
