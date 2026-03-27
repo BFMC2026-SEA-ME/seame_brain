@@ -216,35 +216,35 @@ class processDashboard(WorkerProcess):
     # ===================================== RUN ==========================================
     def run(self):
         """Apply the initializing method."""
-        # Patch stdlib only inside the dashboard child process so the main
-        # process and other workers keep their normal threading behavior.
         try:
-            eventlet.monkey_patch()
-        except Exception:
-            pass
+            # ip replacement (opt-in to avoid dev-server rebuilds and disconnects)
+            if os.environ.get("DASHBOARD_AUTO_IP") == "1":
+                IpManager.replace_ip_in_file()
 
-        # ip replacement (opt-in to avoid dev-server rebuilds and disconnects)
-        if os.environ.get("DASHBOARD_AUTO_IP") == "1":
-            IpManager.replace_ip_in_file()
+            self.app = Flask(__name__)
+            self.socketio = SocketIO(
+                self.app,
+                cors_allowed_origins="*",
+                async_mode='eventlet',
+                ping_interval=25,
+                ping_timeout=120,
+            )
+            CORS(self.app, supports_credentials=True)
+            self.calibration = Calibration(self.queueList, self.socketio)
+            self._initialize_messages()
+            self._setup_websocket_handlers()
+            self._start_background_tasks()
 
-        self.app = Flask(__name__)
-        self.socketio = SocketIO(
-            self.app,
-            cors_allowed_origins="*",
-            async_mode='eventlet',
-            ping_interval=25,
-            ping_timeout=120,
-        )
-        CORS(self.app, supports_credentials=True)
-        self.calibration = Calibration(self.queueList, self.socketio)
-        self._initialize_messages()
-        self._setup_websocket_handlers()
-        self._start_background_tasks()
+            if self.ready_event:
+                self.ready_event.set()
 
-        if self.ready_event:
-            self.ready_event.set()
-
-        self.socketio.run(self.app, host='0.0.0.0', port=5005)
+            self.socketio.run(self.app, host='0.0.0.0', port=5005)
+        except Exception as exc:
+            print(
+                f"\033[1;97m[ Dashboard ] :\033[0m "
+                f"\033[1;91mERROR\033[0m - Dashboard process failed to start: {exc}"
+            )
+            raise
 
 
     def subscribe(self):
