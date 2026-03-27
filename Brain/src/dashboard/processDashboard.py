@@ -101,10 +101,6 @@ class processDashboard(WorkerProcess):
         self.queueList = queueList
         self.logger = logging
         self.debugging = debugging
-        
-        # ip replacement (opt-in to avoid dev-server rebuilds and disconnects)
-        if os.environ.get("DASHBOARD_AUTO_IP") == "1":
-            IpManager.replace_ip_in_file()
 
         # state machine
         self.stateMachine = StateMachine.get_instance()
@@ -154,24 +150,12 @@ class processDashboard(WorkerProcess):
         # configuration
         self.table_state_file = self._get_table_state_path()
 
-        # setup flask and socketio
-        self.app = Flask(__name__)
-        self.socketio = SocketIO(
-            self.app,
-            cors_allowed_origins="*",
-            async_mode='eventlet',
-            ping_interval=25,
-            ping_timeout=120,
-        )
-        CORS(self.app, supports_credentials=True)
-
-        # calibration
-        self.calibration = Calibration(self.queueList, self.socketio)
-
-        # initialize message handling
-        self._initialize_messages()
-        self._setup_websocket_handlers()
-        self._start_background_tasks()
+        # Runtime-only objects must be created in the child process.
+        # Creating Flask/SocketIO/greenlets in the parent and then forking
+        # causes unstable websocket behavior under load.
+        self.app = None
+        self.socketio = None
+        self.calibration = None
 
         super(processDashboard, self).__init__(self.queueList, ready_event)
     
@@ -203,6 +187,8 @@ class processDashboard(WorkerProcess):
 
     def _setup_websocket_handlers(self):
         """Setup WebSocket event handlers."""
+        if self.socketio is None:
+            return
         self.socketio.on_event('message', self.handle_message)
         self.socketio.on_event('save', self.handle_save_table_state)
         self.socketio.on_event('load', self.handle_load_table_state)
@@ -230,6 +216,31 @@ class processDashboard(WorkerProcess):
     # ===================================== RUN ==========================================
     def run(self):
         """Apply the initializing method."""
+        # Patch stdlib only inside the dashboard child process so the main
+        # process and other workers keep their normal threading behavior.
+        try:
+            eventlet.monkey_patch()
+        except Exception:
+            pass
+
+        # ip replacement (opt-in to avoid dev-server rebuilds and disconnects)
+        if os.environ.get("DASHBOARD_AUTO_IP") == "1":
+            IpManager.replace_ip_in_file()
+
+        self.app = Flask(__name__)
+        self.socketio = SocketIO(
+            self.app,
+            cors_allowed_origins="*",
+            async_mode='eventlet',
+            ping_interval=25,
+            ping_timeout=120,
+        )
+        CORS(self.app, supports_credentials=True)
+        self.calibration = Calibration(self.queueList, self.socketio)
+        self._initialize_messages()
+        self._setup_websocket_handlers()
+        self._start_background_tasks()
+
         if self.ready_event:
             self.ready_event.set()
 
@@ -333,7 +344,8 @@ class processDashboard(WorkerProcess):
 
     def handle_calibration(self, dataDict, socketId):
         """Handle calibration signals from frontend."""
-        self.calibration.handle_calibration_signal(dataDict, socketId)
+        if self.calibration is not None:
+            self.calibration.handle_calibration_signal(dataDict, socketId)
 
 
     def handle_get_current_serial_connection_state(self, socketId):
