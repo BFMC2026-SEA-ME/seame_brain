@@ -30,7 +30,7 @@ ROS_CAMERA_TOPIC = os.getenv(
 )
 
 # Max FPS to push into the system. Lower = less load / less queue pressure.
-ROS_CAMERA_MAX_FPS = float(os.getenv("ROS_CAMERA_MAX_FPS", "5"))
+ROS_CAMERA_MAX_FPS = float(os.getenv("ROS_CAMERA_MAX_FPS", "2"))
 
 # Keepalive resend interval (only used when no new frames are coming).
 ROS_CAMERA_KEEPALIVE_SEC = float(os.getenv("ROS_CAMERA_KEEPALIVE_SEC", "1.0"))
