@@ -30,10 +30,15 @@ if __name__ == "__main__":
     import sys
     sys.path.insert(0, "../../..")
 
+import eventlet
+
+# Flask-SocketIO runs on eventlet in this process. Without monkey patching,
+# blocking stdlib calls can stall the whole dashboard under load.
+eventlet.monkey_patch()
+
 import psutil
 import json
 import inspect
-import eventlet
 import os
 import time
 import glob
@@ -129,6 +134,7 @@ class processDashboard(WorkerProcess):
         # session management
         self.sessionActive = False
         self.activeUser = None
+        self.connectedClients = set()
 
         # serial connection state
         self.serialConnected = False
@@ -189,6 +195,7 @@ class processDashboard(WorkerProcess):
         """Setup WebSocket event handlers."""
         if self.socketio is None:
             return
+        self.socketio.on_event('connect', self.handle_connect)
         self.socketio.on_event('message', self.handle_message)
         self.socketio.on_event('save', self.handle_save_table_state)
         self.socketio.on_event('load', self.handle_load_table_state)
@@ -318,6 +325,10 @@ class processDashboard(WorkerProcess):
             self.logger.error(f"Failed to parse JSON message: {e}")
             self.socketio.emit('response', {'error': 'Invalid JSON format'}, room=socketId) # type: ignore
 
+    def handle_connect(self):
+        """Track connected clients so camera frames are not broadcast into the void."""
+        self.connectedClients.add(request.sid)
+
 
     def handle_heartbeat(self):
         """Handle heartbeat message."""
@@ -395,6 +406,7 @@ class processDashboard(WorkerProcess):
     def handle_disconnect(self):
         """Handle client disconnect to release session ownership."""
         socketId = request.sid
+        self.connectedClients.discard(socketId)
         if self.sessionActive and self.activeUser == socketId:
             self._trigger_safety_stop("socket disconnect")
             self.sessionActive = False
@@ -505,6 +517,9 @@ class processDashboard(WorkerProcess):
         try:
             self._drain_camera_queue()
 
+            if not self.connectedClients:
+                return
+
             now = time.monotonic()
             if (
                 self._latest_camera_frame is not None
@@ -512,16 +527,19 @@ class processDashboard(WorkerProcess):
                 and now - self._last_camera_emit >= self._camera_emit_period_s
             ):
                 payload = self._latest_camera_frame
+                emit_kwargs = {}
+                if self.sessionActive and self.activeUser in self.connectedClients:
+                    emit_kwargs["room"] = self.activeUser
+                try:
+                    self.socketio.emit("serialCamera", payload, binary=True, **emit_kwargs)
+                except Exception:
+                    self.socketio.emit("serialCamera", {"value": payload}, **emit_kwargs)
                 self._camera_frame_dirty = False
                 self._last_camera_emit = now
-                try:
-                    self.socketio.emit("serialCamera", payload, binary=True)
-                except Exception:
-                    self.socketio.emit("serialCamera", {"value": payload})
         except Exception as exc:
             self.logger.error(f"send_camera_messages failed: {exc}")
-
-        eventlet.spawn_after(self._camera_loop_period_s, self.send_camera_messages)
+        finally:
+            eventlet.spawn_after(self._camera_loop_period_s, self.send_camera_messages)
 
     def _drain_camera_queue(self):
         """Read the latest camera payload directly from the Image queue."""

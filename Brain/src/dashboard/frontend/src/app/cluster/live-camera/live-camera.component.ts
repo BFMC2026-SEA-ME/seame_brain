@@ -44,8 +44,11 @@ export class LiveCameraComponent {
   private canvasSize: number[] = [512, 270];
   private cameraSubscription: Subscription | undefined;
   private loadingTimeout: any;
+  private renderInterval: any;
   private objectUrl: string | null = null;
   private blackImage: string = '';
+  private pendingFrame: Blob | string | null = null;
+  private readonly renderPeriodMs = 120;
 
   constructor( private  webSocketService: WebSocketService) { }
 
@@ -53,6 +56,9 @@ export class LiveCameraComponent {
   {  
     this.blackImage = this.createBlackImage();
     this.image = this.blackImage;
+    this.renderInterval = setInterval(() => {
+      this.flushPendingFrame();
+    }, this.renderPeriodMs);
 
     this.cameraSubscription = this.webSocketService.receiveCamera().subscribe(
       (message) => {
@@ -60,22 +66,21 @@ export class LiveCameraComponent {
         const payload = (message as any)?.value ?? message;
 
         if (payload instanceof Blob) {
-          this.setBlobImage(payload);
+          this.pendingFrame = payload;
         } else if (payload instanceof ArrayBuffer) {
           const blob = new Blob([payload], { type: 'image/jpeg' });
-          this.setBlobImage(blob);
+          this.pendingFrame = blob;
         } else if (payload && (payload as any).type === 'Buffer' && Array.isArray((payload as any).data)) {
           const blob = new Blob([new Uint8Array((payload as any).data)], { type: 'image/jpeg' });
-          this.setBlobImage(blob);
+          this.pendingFrame = blob;
         } else if (typeof payload === 'string') {
-          this.revokeObjectUrl();
-          // 이미 data URL이면 그대로, 아니면 base64로 가정
-          this.image = payload.startsWith('data:image')
+          this.pendingFrame = payload.startsWith('data:image')
             ? payload
             : `data:image/jpeg;base64,${payload}`;
         } else {
           // 알 수 없는 타입이면 블랙 이미지로 리셋
           this.setBlackImage();
+          this.pendingFrame = null;
         }
         this.loading = false;
         // Reset the loading timeout on each new image
@@ -102,7 +107,25 @@ export class LiveCameraComponent {
     if (this.loadingTimeout) {
       clearTimeout(this.loadingTimeout);
     }
+    if (this.renderInterval) {
+      clearInterval(this.renderInterval);
+    }
     this.revokeObjectUrl();
+  }
+
+  private flushPendingFrame(): void {
+    if (this.pendingFrame === null) {
+      return;
+    }
+
+    if (this.pendingFrame instanceof Blob) {
+      this.setBlobImage(this.pendingFrame);
+    } else {
+      this.revokeObjectUrl();
+      this.image = this.pendingFrame;
+    }
+
+    this.pendingFrame = null;
   }
 
   private setBlobImage(blob: Blob): void {
