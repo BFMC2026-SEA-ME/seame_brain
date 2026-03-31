@@ -30,15 +30,10 @@ if __name__ == "__main__":
     import sys
     sys.path.insert(0, "../../..")
 
-import eventlet
-
-# Flask-SocketIO runs on eventlet in this process. Without monkey patching,
-# blocking stdlib calls can stall the whole dashboard under load.
-eventlet.monkey_patch()
-
 import psutil
 import json
 import inspect
+import eventlet
 import os
 import time
 import glob
