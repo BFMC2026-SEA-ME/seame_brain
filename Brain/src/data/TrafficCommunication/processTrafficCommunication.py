@@ -134,7 +134,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._last_insert = {"devicePos": 0.0, "deviceRot": 0.0, "deviceSpeed": 0.0, "historyData": 0.0}
         self._publish_heartbeat_period = max(
             self._min_publish_period,
-            float(os.getenv("TRAFFIC_PUBLISH_HEARTBEAT_PERIOD", "3.0")),
+            float(os.getenv("TRAFFIC_PUBLISH_HEARTBEAT_PERIOD", str(self._min_publish_period))),
         )
         self._position_change_epsilon = float(os.getenv("TRAFFIC_POSITION_CHANGE_EPSILON_M", "0.05"))
         self._rotation_change_epsilon = float(os.getenv("TRAFFIC_ROTATION_CHANGE_EPSILON_DEG", "1.0"))
