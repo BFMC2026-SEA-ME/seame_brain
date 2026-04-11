@@ -30,7 +30,7 @@ ROS_CAMERA_TOPIC = os.getenv(
 )
 
 # Max FPS to push into the system. Lower = less load / less queue pressure.
-ROS_CAMERA_MAX_FPS = float(os.getenv("ROS_CAMERA_MAX_FPS", "2"))
+ROS_CAMERA_MAX_FPS = float(os.getenv("ROS_CAMERA_MAX_FPS", "1"))
 
 # Keepalive resend interval (only used when no new frames are coming).
 # Default is disabled because repeated resends add bandwidth without improving
@@ -40,7 +40,7 @@ ROS_CAMERA_KEEPALIVE_SEC = float(os.getenv("ROS_CAMERA_KEEPALIVE_SEC", "0.0"))
 # If True and using /compressed topics, forward bytes as-is (no decode/resize).
 # This minimizes CPU and prevents queue buildup from expensive re-encoding.
 # Set to 0 when you want to downscale here for lower bandwidth.
-ROS_CAMERA_PASSTHROUGH = os.getenv("ROS_CAMERA_PASSTHROUGH", "1") == "1"
+ROS_CAMERA_PASSTHROUGH = os.getenv("ROS_CAMERA_PASSTHROUGH", "0.5") == "1"
 
 # Downscale size when passthrough is off. Format: "WIDTHxHEIGHT".
 # Example: 320x180

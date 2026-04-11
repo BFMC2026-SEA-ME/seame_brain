@@ -12,7 +12,7 @@ import numpy as np
 from src.templates.threadwithstop import ThreadWithStop
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
-from src.utils.messages.allMessages import serialCamera, StateChange
+from src.utils.messages.allMessages import CameraStreamState, StateChange, serialCamera
 from src.statemachine.systemMode import SystemMode
 
 from rclpy.qos import qos_profile_sensor_data
@@ -62,6 +62,9 @@ class RosCameraThread(ThreadWithStop):
         self.stateChangeSubscriber = messageHandlerSubscriber(
             self.queuesList, StateChange, "lastOnly", True
         )
+        self.cameraStreamStateSubscriber = messageHandlerSubscriber(
+            self.queuesList, CameraStreamState, "lastOnly", True
+        )
 
         self._compressed_topic = (
             self.topic_name.endswith("/compressed")
@@ -78,6 +81,7 @@ class RosCameraThread(ThreadWithStop):
         self._last_emit_ts: float = 0.0
         self._last_send_ts: float = 0.0
         self._last_init_try_ts: float = 0.0
+        self._stream_enabled: bool = False
 
     # ================================ STATE CHANGE ====================================
     def state_change_handler(self):
@@ -89,6 +93,13 @@ class RosCameraThread(ThreadWithStop):
                 self.resume()
             else:
                 self.pause()
+
+        stream_message = self.cameraStreamStateSubscriber.receive()
+        if stream_message is not None:
+            self._stream_enabled = bool(stream_message)
+            if not self._stream_enabled:
+                self._last_payload = None
+                self._last_emit_ts = 0.0
 
     # ================================ RUN ============================================
     def thread_work(self):
@@ -188,6 +199,9 @@ class RosCameraThread(ThreadWithStop):
                 def listener_callback(self, msg):
                     try:
                         now_ts = time.monotonic()
+
+                        if not outer_self._stream_enabled:
+                            return
 
                         # FPS 제한: 너무 많이 보내면 대시보드/큐가 밀릴 수 있음
                         if now_ts - outer_self._last_send_ts < outer_self.min_frame_interval:

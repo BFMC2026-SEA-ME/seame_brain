@@ -153,6 +153,7 @@ class processDashboard(WorkerProcess):
         )
         self._latest_camera_frame = None
         self._camera_frame_dirty = False
+        self._camera_stream_enabled = False
         self._no_ack_message_names = {"SteerMotor", "SpeedMotor", "Brake", "Control"}
 
         # configuration
@@ -283,6 +284,13 @@ class processDashboard(WorkerProcess):
         if dataName in self.sendMessages:
             self.sendMessages[dataName]["obj"].send(dataDict.get("Value"))
 
+    def _sync_camera_stream_state(self):
+        should_stream = bool(self.connectedClients)
+        if should_stream == self._camera_stream_enabled:
+            return
+        self._camera_stream_enabled = should_stream
+        self.send_message_to_brain("CameraStreamState", {"Value": should_stream})
+
 
     def handle_message(self, data):
         """Handle incoming WebSocket messages."""
@@ -330,6 +338,7 @@ class processDashboard(WorkerProcess):
     def handle_connect(self):
         """Track connected clients so camera frames are not broadcast into the void."""
         self.connectedClients.add(request.sid)
+        self._sync_camera_stream_state()
 
 
     def handle_heartbeat(self):
@@ -409,6 +418,7 @@ class processDashboard(WorkerProcess):
         """Handle client disconnect to release session ownership."""
         socketId = request.sid
         self.connectedClients.discard(socketId)
+        self._sync_camera_stream_state()
         if self.sessionActive and self.activeUser == socketId:
             self._trigger_safety_stop("socket disconnect")
             self.sessionActive = False
