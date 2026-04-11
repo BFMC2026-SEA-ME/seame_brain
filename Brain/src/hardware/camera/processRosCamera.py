@@ -33,7 +33,9 @@ ROS_CAMERA_TOPIC = os.getenv(
 ROS_CAMERA_MAX_FPS = float(os.getenv("ROS_CAMERA_MAX_FPS", "2"))
 
 # Keepalive resend interval (only used when no new frames are coming).
-ROS_CAMERA_KEEPALIVE_SEC = float(os.getenv("ROS_CAMERA_KEEPALIVE_SEC", "1.0"))
+# Default is disabled because repeated resends add bandwidth without improving
+# latency while the upstream camera is already publishing continuously.
+ROS_CAMERA_KEEPALIVE_SEC = float(os.getenv("ROS_CAMERA_KEEPALIVE_SEC", "0.0"))
 
 # If True and using /compressed topics, forward bytes as-is (no decode/resize).
 # This minimizes CPU and prevents queue buildup from expensive re-encoding.

@@ -41,20 +41,22 @@ class RosCameraThread(ThreadWithStop):
         jpeg_quality: int = 60,  # 낮출수록 용량 감소
         passthrough_compressed: bool = True,
     ):
-        super(RosCameraThread, self).__init__(pause=0.01)
+        super(RosCameraThread, self).__init__(pause=0.0)
 
         self.queuesList = queuesList
         self.logger = logger
         self.debugging = debugging
 
         self.topic_name = topic_name
-        self.keepalive_sec = keepalive_sec
-        self.min_frame_interval = min_frame_interval
-        self.init_retry_sec = init_retry_sec
+        self.keepalive_sec = max(0.0, float(keepalive_sec))
+        self.min_frame_interval = max(0.0, float(min_frame_interval))
+        self.init_retry_sec = max(0.1, float(init_retry_sec))
         self.node_name = node_name
         self.downscale_size = downscale_size
         self.jpeg_quality = jpeg_quality
         self.passthrough_compressed = passthrough_compressed
+        self._spin_timeout_sec = self._compute_spin_timeout()
+        self._retry_sleep_sec = min(0.25, self.init_retry_sec)
 
         self.serialCameraSender = messageHandlerSender(self.queuesList, serialCamera, drop_old=True)
         self.stateChangeSubscriber = messageHandlerSubscriber(
@@ -92,32 +94,36 @@ class RosCameraThread(ThreadWithStop):
     def thread_work(self):
         # 1) ROS Node 없으면 초기화 시도 (realsense 노드 외부 실행)
         if self._node is None:
-            now = time.time()
+            now = time.monotonic()
             if now - self._last_init_try_ts >= self.init_retry_sec:
                 self._last_init_try_ts = now
                 self._maybe_init_ros()
-            time.sleep(0.05)
+            self._blocker.wait(self._retry_sleep_sec)
             return
 
         # 2) rclpy 컨텍스트 죽었으면 리셋 후 재시도
         if self._rclpy is not None and not self._rclpy.ok():
             self._reset_ros_context()
-            time.sleep(0.1)
+            self._blocker.wait(0.1)
             return
 
         # 3) executor spin
         try:
             if self._executor is not None:
-                self._executor.spin_once(timeout_sec=0.02)
+                self._executor.spin_once(timeout_sec=self._spin_timeout_sec)
         except Exception as exc:
             print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;91mERROR\033[0m - spin_once failed: {exc}")
             self._reset_ros_context()
-            time.sleep(0.1)
+            self._blocker.wait(0.1)
             return
 
         # 4) keepalive: 마지막 프레임 재전송
-        now = time.time()
-        if self._last_payload is not None and now - self._last_emit_ts >= self.keepalive_sec:
+        now = time.monotonic()
+        if (
+            self.keepalive_sec > 0.0
+            and self._last_payload is not None
+            and now - self._last_emit_ts >= self.keepalive_sec
+        ):
             self.serialCameraSender.send(self._last_payload)
             self._last_emit_ts = now
 
@@ -181,7 +187,7 @@ class RosCameraThread(ThreadWithStop):
 
                 def listener_callback(self, msg):
                     try:
-                        now_ts = time.time()
+                        now_ts = time.monotonic()
 
                         # FPS 제한: 너무 많이 보내면 대시보드/큐가 밀릴 수 있음
                         if now_ts - outer_self._last_send_ts < outer_self.min_frame_interval:
@@ -227,6 +233,14 @@ class RosCameraThread(ThreadWithStop):
         except Exception as exc:
             print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;91mERROR\033[0m - Failed to init ROS2: {exc}")
             self._reset_ros_context()
+
+    def _compute_spin_timeout(self) -> float:
+        timeouts = [0.1]
+        if self.min_frame_interval > 0.0:
+            timeouts.append(max(0.02, min(0.1, self.min_frame_interval)))
+        if self.keepalive_sec > 0.0:
+            timeouts.append(max(0.02, min(0.1, self.keepalive_sec)))
+        return min(timeouts)
 
     def _reset_ros_context(self):
         """Clean up ROS2 executor/node/context so we can re-init on next loop."""

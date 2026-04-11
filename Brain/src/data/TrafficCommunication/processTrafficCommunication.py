@@ -132,7 +132,16 @@ class threadTrafficDataCollector(ThreadWithStop):
         # [ADDED] Server upload payload is refreshed at 1 Hz.
         self._min_publish_period = 1.0  # seconds
         self._last_insert = {"devicePos": 0.0, "deviceRot": 0.0, "deviceSpeed": 0.0, "historyData": 0.0}
-        self._last_tcp_send = 0.0
+        self._publish_heartbeat_period = max(
+            self._min_publish_period,
+            float(os.getenv("TRAFFIC_PUBLISH_HEARTBEAT_PERIOD", "3.0")),
+        )
+        self._position_change_epsilon = float(os.getenv("TRAFFIC_POSITION_CHANGE_EPSILON_M", "0.05"))
+        self._rotation_change_epsilon = float(os.getenv("TRAFFIC_ROTATION_CHANGE_EPSILON_DEG", "1.0"))
+        self._speed_change_epsilon = float(os.getenv("TRAFFIC_SPEED_CHANGE_EPSILON_CMS", "2.0"))
+        self._last_shared_payload = {"devicePos": None, "deviceRot": None, "deviceSpeed": None}
+        self._last_tcp_send = {"devicePos": 0.0, "deviceRot": 0.0, "deviceSpeed": 0.0, "historyData": 0.0}
+        self._last_tcp_payload = {"devicePos": None, "deviceRot": None, "deviceSpeed": None}
 
         # direct TCP sender (based on proven test script)
         self._tcp_enabled = os.getenv("TRAFFIC_SIMPLE_TCP_ENABLE", "1").lower() in ("1", "true", "yes", "y")
@@ -576,19 +585,71 @@ class threadTrafficDataCollector(ThreadWithStop):
         }
         return alias_map.get(normalized)
 
+    def _angle_diff_deg(self, current, previous):
+        return abs((float(current) - float(previous) + 180.0) % 360.0 - 180.0)
+
+    def _payload_changed(self, key, current, previous):
+        if previous is None:
+            return True
+
+        if key == "devicePos":
+            return math.hypot(
+                float(current[0]) - float(previous[0]),
+                float(current[1]) - float(previous[1]),
+            ) >= self._position_change_epsilon
+
+        if key == "deviceRot":
+            return self._angle_diff_deg(current, previous) >= self._rotation_change_epsilon
+
+        if key == "deviceSpeed":
+            return abs(float(current) - float(previous)) >= self._speed_change_epsilon
+
+        return current != previous
+
+    def _should_publish_cached(self, key, current, now, last_payloads, last_sent):
+        previous = last_payloads.get(key)
+        if previous is None:
+            return True
+
+        if self._payload_changed(key, current, previous):
+            return (now - last_sent.get(key, 0.0)) >= self._min_publish_period
+
+        return (now - last_sent.get(key, 0.0)) >= self._publish_heartbeat_period
+
     def _flush_to_shared_memory(self):
         now = time.monotonic()
 
-        if self.latest_pos is not None and (now - self._last_insert["devicePos"]) >= self._min_publish_period:
+        if self.latest_pos is not None and self._should_publish_cached(
+            "devicePos",
+            self.latest_pos,
+            now,
+            self._last_shared_payload,
+            self._last_insert,
+        ):
             self.shared_memory.insert("devicePos", [self.latest_pos[0], self.latest_pos[1]])
+            self._last_shared_payload["devicePos"] = tuple(self.latest_pos)
             self._last_insert["devicePos"] = now
 
-        if self.latest_rot is not None and (now - self._last_insert["deviceRot"]) >= self._min_publish_period:
+        if self.latest_rot is not None and self._should_publish_cached(
+            "deviceRot",
+            self.latest_rot,
+            now,
+            self._last_shared_payload,
+            self._last_insert,
+        ):
             self.shared_memory.insert("deviceRot", [self.latest_rot])
+            self._last_shared_payload["deviceRot"] = float(self.latest_rot)
             self._last_insert["deviceRot"] = now
 
-        if self.latest_speed is not None and (now - self._last_insert["deviceSpeed"]) >= self._min_publish_period:
+        if self.latest_speed is not None and self._should_publish_cached(
+            "deviceSpeed",
+            self.latest_speed,
+            now,
+            self._last_shared_payload,
+            self._last_insert,
+        ):
             self.shared_memory.insert("deviceSpeed", [self.latest_speed])
+            self._last_shared_payload["deviceSpeed"] = float(self.latest_speed)
             self._last_insert["deviceSpeed"] = now
 
         # [ADDED][historyData] push new /obstacle/event_xy event as historyData(value1=id, value2=x, value3=y).
@@ -715,12 +776,46 @@ class threadTrafficDataCollector(ThreadWithStop):
             return
 
         now = time.monotonic()
-        if (now - self._last_tcp_send) < self._min_publish_period:
-            return
         if not self._connect_tcp_if_needed():
             return
 
+        pose_due = False
         if has_pose_payload:
+            pose_due = (
+                self._should_publish_cached(
+                    "devicePos",
+                    self.latest_pos,
+                    now,
+                    self._last_tcp_payload,
+                    self._last_tcp_send,
+                )
+                or self._should_publish_cached(
+                    "deviceRot",
+                    self.latest_rot,
+                    now,
+                    self._last_tcp_payload,
+                    self._last_tcp_send,
+                )
+            )
+
+        speed_due = False
+        if has_speed_payload:
+            speed_due = self._should_publish_cached(
+                "deviceSpeed",
+                self.latest_speed,
+                now,
+                self._last_tcp_payload,
+                self._last_tcp_send,
+            )
+
+        history_due = False
+        if has_history_payload:
+            history_due = (now - self._last_tcp_send["historyData"]) >= self._min_publish_period
+
+        if not pose_due and not speed_due and not history_due:
+            return
+
+        if pose_due:
             ok = self._send_tcp_json(
                 {
                     "reqORinfo": "info",
@@ -731,6 +826,8 @@ class threadTrafficDataCollector(ThreadWithStop):
             )
             if not ok:
                 return
+            self._last_tcp_payload["devicePos"] = tuple(self.latest_pos)
+            self._last_tcp_send["devicePos"] = now
 
             ok = self._send_tcp_json(
                 {
@@ -741,8 +838,10 @@ class threadTrafficDataCollector(ThreadWithStop):
             )
             if not ok:
                 return
+            self._last_tcp_payload["deviceRot"] = float(self.latest_rot)
+            self._last_tcp_send["deviceRot"] = now
 
-        if has_speed_payload:
+        if speed_due:
             speed_value = float(self.latest_speed)
             speed_source = self._speed_source if self._speed_source is not None else "unknown"
             ok = self._send_tcp_json(
@@ -754,10 +853,12 @@ class threadTrafficDataCollector(ThreadWithStop):
             )
             if not ok:
                 return
+            self._last_tcp_payload["deviceSpeed"] = speed_value
+            self._last_tcp_send["deviceSpeed"] = now
             if self._verbose_log:
                 self._log_speed_sent(speed_value, speed_source)
 
-        if has_history_payload:
+        if history_due:
             ok = self._send_tcp_json(
                 {
                     "reqORinfo": "info",
@@ -770,8 +871,7 @@ class threadTrafficDataCollector(ThreadWithStop):
             if not ok:
                 return
             self._last_tcp_history_seq = self._history_update_seq
-
-        self._last_tcp_send = now
+            self._last_tcp_send["historyData"] = now
 
     def _poll_tcp_rx(self):
         if not self._tcp_enabled:

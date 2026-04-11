@@ -143,7 +143,14 @@ class processDashboard(WorkerProcess):
         self._semaphore_drain_limit = int(os.getenv("DASHBOARD_SEMAPHORE_DRAIN_LIMIT", "64"))
         self._last_camera_emit = 0.0
         self._camera_emit_period_s = float(os.getenv("DASHBOARD_CAMERA_EMIT_PERIOD", "0.12"))
-        self._camera_loop_period_s = float(os.getenv("DASHBOARD_CAMERA_LOOP_PERIOD", "0.02"))
+        self._camera_loop_period_s = max(
+            0.02,
+            float(os.getenv("DASHBOARD_CAMERA_LOOP_PERIOD", str(self._camera_emit_period_s))),
+        )
+        self._camera_idle_loop_period_s = max(
+            self._camera_loop_period_s,
+            float(os.getenv("DASHBOARD_CAMERA_IDLE_LOOP_PERIOD", "0.25")),
+        )
         self._latest_camera_frame = None
         self._camera_frame_dirty = False
         self._no_ack_message_names = {"SteerMotor", "SpeedMotor", "Brake", "Control"}
@@ -534,7 +541,12 @@ class processDashboard(WorkerProcess):
         except Exception as exc:
             self.logger.error(f"send_camera_messages failed: {exc}")
         finally:
-            eventlet.spawn_after(self._camera_loop_period_s, self.send_camera_messages)
+            next_run_s = (
+                self._camera_loop_period_s
+                if self.connectedClients
+                else self._camera_idle_loop_period_s
+            )
+            eventlet.spawn_after(next_run_s, self.send_camera_messages)
 
     def _drain_camera_queue(self):
         """Read the latest camera payload directly from the Image queue."""
