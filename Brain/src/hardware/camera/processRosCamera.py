@@ -40,7 +40,10 @@ ROS_CAMERA_KEEPALIVE_SEC = float(os.getenv("ROS_CAMERA_KEEPALIVE_SEC", "0.0"))
 # If True and using /compressed topics, forward bytes as-is (no decode/resize).
 # This minimizes CPU and prevents queue buildup from expensive re-encoding.
 # Set to 0 when you want to downscale here for lower bandwidth.
-ROS_CAMERA_PASSTHROUGH = os.getenv("ROS_CAMERA_PASSTHROUGH", "0.5") == "1"
+#
+# Default to passthrough to keep dashboard video overhead low while other ROS
+# camera consumers (e.g. global_follow perception nodes) are active.
+ROS_CAMERA_PASSTHROUGH = os.getenv("ROS_CAMERA_PASSTHROUGH", "1") == "1"
 
 # Downscale size when passthrough is off. Format: "WIDTHxHEIGHT".
 # Example: 320x180
