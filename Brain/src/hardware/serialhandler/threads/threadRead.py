@@ -598,13 +598,20 @@ class threadRead(ThreadWithStop):
                 print(f"[SerialHandler] ROS2 wheel_twist publish failed: {exc}")
 
     # ---------------- Message handlers ----------------
-    def _handle_imu_sample(self, roll, pitch, yaw, accelx, accely, accelz, gyrox, gyroy, gyroz,
-                           stamp=None, quat=None, orientation_cov=None):
-        data = {"roll": str(roll), "pitch": str(pitch), "yaw": str(yaw)}
-        self.imuDataSender.send(str(data))
+    def _should_publish_ros_sample(self):
         now = time.monotonic()
         if now - self._last_ros_publish_time >= self._ros_publish_min_interval:
             self._last_ros_publish_time = now
+            return True
+        return False
+
+    def _handle_imu_sample(self, roll, pitch, yaw, accelx, accely, accelz, gyrox, gyroy, gyroz,
+                           stamp=None, quat=None, orientation_cov=None, publish_ros=None):
+        data = {"roll": str(roll), "pitch": str(pitch), "yaw": str(yaw)}
+        self.imuDataSender.send(str(data))
+        if publish_ros is None:
+            publish_ros = self._should_publish_ros_sample()
+        if publish_ros:
             self._publish_imu(
                 roll, pitch, yaw,
                 accelx, accely, accelz,
@@ -614,9 +621,10 @@ class threadRead(ThreadWithStop):
                 orientation_cov=orientation_cov,
             )
 
-    def _handle_encoder_sample(self, rpm, velocity, distance, stamp=None):
-        now = time.monotonic()
-        if now - self._last_ros_publish_time >= self._ros_publish_min_interval:
+    def _handle_encoder_sample(self, rpm, velocity, distance, stamp=None, publish_ros=None):
+        if publish_ros is None:
+            publish_ros = self._should_publish_ros_sample()
+        if publish_ros:
             self._publish_wheel_encoder_and_twist([rpm, velocity, distance], stamp)
 
     def _init_senders(self):
@@ -719,6 +727,7 @@ class threadRead(ThreadWithStop):
                     cov = parsed["cov"]
 
                     stamp = self._stamp_from_us(ts_us)
+                    publish_ros = self._should_publish_ros_sample()
 
                     # IMU + Wheel(encoder+twist) share SAME stamp  (요구사항 충족)
                     self._handle_imu_sample(
@@ -728,8 +737,9 @@ class threadRead(ThreadWithStop):
                         stamp,
                         quat=quat,
                         orientation_cov=cov,
+                        publish_ros=publish_ros,
                     )
-                    self._handle_encoder_sample(rpm, velocity, distance, stamp)
+                    self._handle_encoder_sample(rpm, velocity, distance, stamp, publish_ros=publish_ros)
                 elif self.debugger:
                     try:
                         self.logger.warning(f"[SerialHandler] IMUENC parse failed: {value}")
