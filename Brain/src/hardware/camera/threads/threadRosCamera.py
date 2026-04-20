@@ -2,20 +2,14 @@
 # All rights reserved.
 # (BSD-3 Clause)
 
-import base64
 import time
 from typing import Optional, Tuple
-
-import cv2
-import numpy as np
 
 from src.templates.threadwithstop import ThreadWithStop
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.allMessages import CameraStreamState, StateChange, serialCamera
 from src.statemachine.systemMode import SystemMode
-
-from rclpy.qos import qos_profile_sensor_data
 
 
 class RosCameraThread(ThreadWithStop):
@@ -76,6 +70,8 @@ class RosCameraThread(ThreadWithStop):
         self._rclpy = None
         self._executor = None
         self._node = None
+        self._cv2 = None
+        self._np = None
 
         self._last_payload: Optional[bytes] = None
         self._last_emit_ts: float = 0.0
@@ -144,6 +140,15 @@ class RosCameraThread(ThreadWithStop):
         super(RosCameraThread, self).stop()
 
     # ================================ INTERNALS =======================================
+    def _get_image_codec_modules(self):
+        if self._cv2 is None or self._np is None:
+            import cv2
+            import numpy as np
+
+            self._cv2 = cv2
+            self._np = np
+        return self._cv2, self._np
+
     def _maybe_init_ros(self):
         """ROS2 초기화 및 구독 설정."""
         if self._node is not None or self._ros_import_error:
@@ -213,6 +218,7 @@ class RosCameraThread(ThreadWithStop):
                         # 해상도/품질 낮춰서 전송(선택)
                         if not outer_self.passthrough_compressed and outer_self.downscale_size is not None:
                             try:
+                                cv2, np = outer_self._get_image_codec_modules()
                                 np_arr = np.frombuffer(payload, np.uint8)
                                 img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
                                 if img is not None:
