@@ -161,6 +161,8 @@ class threadRead(ThreadWithStop):
         # >>> FIX: unused dimensions' variance (make covariance invertible & "ignored")
         # vy/vz/vroll/vpitch/vyaw variance. 아주 크게 주면 EKF가 사실상 안 믿음.
         self._wheel_other_var = self._read_float_env("WHEEL_OTHER_VAR", 1e3)
+        self._last_ros_publish_time = 0.0
+        self._ros_publish_min_interval = float(os.getenv("ROS_PUBLISH_MIN_INTERVAL", "0.02"))
 
         # For imuenc time
         self._imuenc_time_base_us = None
@@ -599,17 +601,22 @@ class threadRead(ThreadWithStop):
                            stamp=None, quat=None, orientation_cov=None):
         data = {"roll": str(roll), "pitch": str(pitch), "yaw": str(yaw)}
         self.imuDataSender.send(str(data))
-        self._publish_imu(
-            roll, pitch, yaw,
-            accelx, accely, accelz,
-            gyrox, gyroy, gyroz,
-            stamp,
-            quat=quat,
-            orientation_cov=orientation_cov,
-        )
+        now = time.monotonic()
+        if now - self._last_ros_publish_time >= self._ros_publish_min_interval:
+            self._last_ros_publish_time = now
+            self._publish_imu(
+                roll, pitch, yaw,
+                accelx, accely, accelz,
+                gyrox, gyroy, gyroz,
+                stamp,
+                quat=quat,
+                orientation_cov=orientation_cov,
+            )
 
     def _handle_encoder_sample(self, rpm, velocity, distance, stamp=None):
-        self._publish_wheel_encoder_and_twist([rpm, velocity, distance], stamp)
+        now = time.monotonic()
+        if now - self._last_ros_publish_time >= self._ros_publish_min_interval:
+            self._publish_wheel_encoder_and_twist([rpm, velocity, distance], stamp)
 
     def _init_senders(self):
         self.enableButtonSender = messageHandlerSender(self.queuesList, EnableButton)

@@ -73,3 +73,6 @@ Brain/temp/*.log
 # mac
 .DS_Store
 **/.DS_Store
+
+# Claude Code context files
+CLAUDE.md

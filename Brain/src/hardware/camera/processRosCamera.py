@@ -43,7 +43,8 @@ ROS_CAMERA_KEEPALIVE_SEC = float(os.getenv("ROS_CAMERA_KEEPALIVE_SEC", "0.0"))
 #
 # Default to passthrough to keep dashboard video overhead low while other ROS
 # camera consumers (e.g. global_follow perception nodes) are active.
-ROS_CAMERA_PASSTHROUGH = os.getenv("ROS_CAMERA_PASSTHROUGH", "1") == "1"
+_passthrough_raw = os.getenv("ROS_CAMERA_PASSTHROUGH", "1")
+ROS_CAMERA_PASSTHROUGH = _passthrough_raw.lower() in ("1", "true", "yes")
 
 # Downscale size when passthrough is off. Format: "WIDTHxHEIGHT".
 # Example: 320x180
@@ -52,8 +53,12 @@ _downscale_size = None
 try:
     _w, _h = _downscale_env.lower().split("x", 1)
     _downscale_size = (int(_w), int(_h))
-except Exception:
-    _downscale_size = None
+except (ValueError, AttributeError):
+    import logging as _log
+    _log.getLogger(__name__).warning(
+        "ROS_CAMERA_DOWNSCALE='%s' is invalid (expected WxH, e.g. 320x180); downscale disabled.",
+        _downscale_env,
+    )
 
 
 class processRosCamera(WorkerProcess):

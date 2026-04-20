@@ -64,9 +64,17 @@ def _read(p: str):
     except Exception:
         return None
 
+_thermal_zone_paths = None
+
+def _get_thermal_zone_paths():
+    global _thermal_zone_paths
+    if _thermal_zone_paths is None:
+        _thermal_zone_paths = sorted(glob.glob("/sys/devices/virtual/thermal/thermal_zone*"))
+    return _thermal_zone_paths
+
 def get_jetson_temps_c() -> dict[str, float]:
     temps = {}
-    for z in sorted(glob.glob("/sys/devices/virtual/thermal/thermal_zone*")):
+    for z in _get_thermal_zone_paths():
         name = _read(z + "/type")
         raw  = _read(z + "/temp")
         if not name or not raw:
