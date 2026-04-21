@@ -145,7 +145,10 @@ class threadTrafficDataCollector(ThreadWithStop):
 
         # direct TCP sender (based on proven test script)
         self._tcp_enabled = os.getenv("TRAFFIC_SIMPLE_TCP_ENABLE", "1").lower() in ("1", "true", "yes", "y")
-        self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.247") # 기훈이형 pc ip 
+        # self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.247") # 기훈이형 pc ip 
+        self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.20") # 기훈이형 pc ip 
+
+        
         self._tcp_port = int(os.getenv("TRAFFIC_TCP_PORT", "5000"))
         self._tcp_bind_ip = os.getenv("TRAFFIC_TCP_BIND_IP", "").strip()
         self._tcp_timeout = float(os.getenv("TRAFFIC_TCP_CONNECT_TIMEOUT", "3.0"))
