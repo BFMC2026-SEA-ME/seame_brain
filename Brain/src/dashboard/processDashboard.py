@@ -40,11 +40,12 @@ import glob
 from queue import Empty
 
 
-from flask import Flask, request
+from flask import Flask, jsonify, request
 from flask_socketio import SocketIO
 from flask_cors import CORS
 from enum import Enum
 
+from src.bridge.processGlobalPlanningBridge import _find_graphml_path, _parse_graphml_nodes
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 from src.templates.workerprocess import WorkerProcess
@@ -65,6 +66,9 @@ def _read(p: str):
         return None
 
 _thermal_zone_paths = None
+_map_nodes_payload_cache = None
+_map_nodes_payload_graph_path = None
+_map_nodes_payload_graph_mtime_ns = None
 
 def _get_thermal_zone_paths():
     global _thermal_zone_paths
@@ -91,6 +95,47 @@ def get_jetson_cpu_temp_c() -> float | None:
     return (temps.get("cpu-thermal")
             or temps.get("tj-thermal")   # 너 출력에도 있음
             or temps.get("soc0-thermal"))
+
+
+def get_dashboard_map_nodes_payload():
+    global _map_nodes_payload_cache
+    global _map_nodes_payload_graph_path
+    global _map_nodes_payload_graph_mtime_ns
+
+    graph_path = _find_graphml_path()
+    if graph_path is None:
+        return {"path": None, "bounds": None, "nodes": []}
+
+    try:
+        mtime_ns = graph_path.stat().st_mtime_ns
+    except Exception:
+        mtime_ns = None
+
+    if (
+        _map_nodes_payload_cache is not None
+        and _map_nodes_payload_graph_path == graph_path
+        and _map_nodes_payload_graph_mtime_ns == mtime_ns
+    ):
+        return _map_nodes_payload_cache
+
+    try:
+        nodes, bounds = _parse_graphml_nodes(graph_path)
+    except Exception as exc:
+        print(
+            f"\033[1;97m[ Dashboard ] :\033[0m "
+            f"\033[1;91mERROR\033[0m - Failed to load map nodes from {graph_path}: {exc}"
+        )
+        return {"path": str(graph_path), "bounds": None, "nodes": []}
+
+    payload = {
+        "path": str(graph_path),
+        "bounds": bounds,
+        "nodes": nodes,
+    }
+    _map_nodes_payload_cache = payload
+    _map_nodes_payload_graph_path = graph_path
+    _map_nodes_payload_graph_mtime_ns = mtime_ns
+    return payload
 
 
 
@@ -199,6 +244,7 @@ class processDashboard(WorkerProcess):
         self.messagesAndVals.pop("CalibPWMData", None)
         self.messagesAndVals.pop("CalibRunDone", None)
         self.messagesAndVals.pop("GlobalPath", None)
+        self.messagesAndVals.pop("MapNodes", None)
         self.subscribe()
     
 
@@ -211,6 +257,17 @@ class processDashboard(WorkerProcess):
         self.socketio.on_event('save', self.handle_save_table_state)
         self.socketio.on_event('load', self.handle_load_table_state)
         self.socketio.on_event('disconnect', self.handle_disconnect)
+
+    def _setup_http_routes(self):
+        """Setup lightweight HTTP routes for static dashboard data."""
+        if self.app is None:
+            return
+
+        self.app.add_url_rule(
+            "/api/map_nodes",
+            view_func=self.handle_get_map_nodes,
+            methods=["GET"],
+        )
     
     
     def _start_background_tasks(self):
@@ -250,6 +307,7 @@ class processDashboard(WorkerProcess):
             CORS(self.app, supports_credentials=True)
             self.calibration = Calibration(self.queueList, self.socketio)
             self._initialize_messages()
+            self._setup_http_routes()
             self._setup_websocket_handlers()
             self._start_background_tasks()
 
@@ -275,7 +333,7 @@ class processDashboard(WorkerProcess):
                 sender = messageHandlerSender(self.queueList, enum["enum"])
                 self.sendMessages[str(name)] = {"obj": sender}
 
-        subscriber = messageHandlerSubscriber(self.queueList, Semaphores, "fifo", True)
+        subscriber = messageHandlerSubscriber(self.queueList, Semaphores, "lastOnly", True)
         self.messages["Semaphores"] = {"obj": subscriber}
 
 
@@ -467,6 +525,10 @@ class processDashboard(WorkerProcess):
         except OSError as e:
             self.logger.error(f"Failed to load table state: {e}")
             self.socketio.emit('response', {'error': 'Failed to load table state'})
+
+    def handle_get_map_nodes(self):
+        """Serve static map nodes over HTTP so the dashboard does not keep a live pipe."""
+        return jsonify(get_dashboard_map_nodes_payload())
 
 
     def update_hardware_data(self):

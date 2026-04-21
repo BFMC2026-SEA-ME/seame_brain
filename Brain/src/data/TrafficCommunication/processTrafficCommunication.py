@@ -82,7 +82,7 @@ class threadTrafficDataCollector(ThreadWithStop):
     HISTORY_TOPIC = "/obstacle_roi/event_xy"   # expected type: std_msgs/String ("class_name,x,y")
 
     def __init__(self, shared_memory, queues_list=None, logger=None, debugging=False):
-        super(threadTrafficDataCollector, self).__init__(pause=0.05)
+        super(threadTrafficDataCollector, self).__init__(pause=0.05) # 대충 20hz 정도 주기로 수신됨
         self.shared_memory = shared_memory
         self.queues_list = queues_list
         self.logger = logger
@@ -190,7 +190,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         if self.queues_list is not None:
             try:
                 self._semaphore_subscriber = messageHandlerSubscriber(
-                    self.queues_list, Semaphores, "fifo", True
+                    self.queues_list, Semaphores, "lastOnly", True
                 )
             except Exception:
                 self._semaphore_subscriber = None
@@ -239,7 +239,7 @@ class threadTrafficDataCollector(ThreadWithStop):
     def thread_work(self):
         self._spin_ros_once()
         self._flush_to_shared_memory()
-        self._flush_to_tcp()
+        self._flush_to_tcp() # tcp 연결 부분
         self._poll_tcp_rx()
         self._poll_cars_queue()
         self._poll_semaphore_queue()
@@ -286,6 +286,7 @@ class threadTrafficDataCollector(ThreadWithStop):
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
             )
             if PoseStamped is not None:
+                # global pose 구독해서 위치/회전 정보 가져오기
                 self._ros_node.create_subscription(PoseStamped, self.POS_TOPIC, self._on_pos, sensor_qos)
             if Vector3Stamped is not None:
                 self._ros_node.create_subscription(Vector3Stamped, self.SPEED_TOPIC, self._on_speed, sensor_qos)
@@ -343,6 +344,7 @@ class threadTrafficDataCollector(ThreadWithStop):
             self._ros_initialized_here = False
 
     # [ADDED] Topic callbacks -> local cache.
+    # global pose 콜백함수 
     def _on_pos(self, msg):
         x = float(msg.pose.position.x)
         y = float(msg.pose.position.y)
@@ -616,6 +618,7 @@ class threadTrafficDataCollector(ThreadWithStop):
 
         return (now - last_sent.get(key, 0.0)) >= self._publish_heartbeat_period
 
+    #  shared memory에 업데이트 
     def _flush_to_shared_memory(self):
         now = time.monotonic()
 
@@ -750,11 +753,13 @@ class threadTrafficDataCollector(ThreadWithStop):
             self._next_tcp_retry = now + 3.0
             return False
 
+    
     def _send_tcp_json(self, payload):
         if self._sock is None:
             return False
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         try:
+            # tcp 통해서 json 형태로 데이터 전송
             self._sock.sendall(raw.encode("utf-8"))
             return True
         except Exception:
@@ -815,6 +820,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         if not pose_due and not speed_due and not history_due:
             return
 
+        # 실제 데이터 payload 전송 부분
         if pose_due:
             ok = self._send_tcp_json(
                 {
@@ -1351,7 +1357,7 @@ if __name__ == "__main__":
     start_time = time.time()
     duration = 10  # specify the duration in seconds
     
-    shared_memory.insert("devicePos", [1.2, 2.3]) # send a position to the server
+    shared_memory.insert("devicePos", [1.2, 2.3]) # send a position x, y to the server
     shared_memory.insert("deviceRot", [3.4]) # send a rotation to the server
     shared_memory.insert("deviceSpeed", [4.5]) # send a speed to the server
     shared_memory.insert("historyData", [5.6, 6.7, 8]) # send a history data point to the server

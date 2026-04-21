@@ -34,6 +34,7 @@ import { Observable, Subject } from 'rxjs';
 })
 export class WebSocketService {
   private webSocket: Socket;
+  private backendUrl: string;
   private connectionStatusSubject = new Subject<'connected' | 'disconnected' | 'error'>();
   connectionStatus$ = this.connectionStatusSubject.asObservable();
 
@@ -91,9 +92,10 @@ export class WebSocketService {
     } else {
       backendUrl = `${protocol}://${fallbackHost}:5005`;
     }
+    this.backendUrl = backendUrl;
 
     this.webSocket = new Socket({
-      url: backendUrl,
+      url: this.backendUrl,
       options: {
         reconnection: true,
         reconnectionAttempts: 1000000,
@@ -266,6 +268,16 @@ export class WebSocketService {
 
   receiveMapNodes(): Observable<any> {
     return this.webSocket.fromEvent('MapNodes');
+  }
+
+  async fetchMapNodes(): Promise<any> {
+    const response = await fetch(`${this.backendUrl}/api/map_nodes`, {
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch map nodes (${response.status})`);
+    }
+    return response.json();
   }
 
   receiveGlobalPose(): Observable<any> {
