@@ -356,7 +356,8 @@ class threadTrafficDataCollector(ThreadWithStop):
         q = msg.pose.orientation
         q_norm_sq = q.w**2 + q.x**2 + q.y**2 + q.z**2
         if q_norm_sq < 0.9 or q_norm_sq > 1.1:
-            # degenerate/uninitialized quaternion — skip rotation update
+            if self.latest_rot is None:
+                self.latest_rot = 0.0
             return
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
@@ -778,37 +779,40 @@ class threadTrafficDataCollector(ThreadWithStop):
     def _flush_to_tcp(self):
         if not self._tcp_enabled:
             return
-        has_pose_payload = self.latest_pos is not None and self.latest_rot is not None
+        has_pos_payload = self.latest_pos is not None
+        has_rot_payload = self.latest_rot is not None
+        has_pose_payload = has_pos_payload or has_rot_payload
         has_speed_payload = self._tcp_send_speed and self.latest_speed is not None
         # [ADDED][historyData] send each new history event once over TCP.
         has_history_payload = (
             self.latest_history is not None
             and self._history_update_seq != self._last_tcp_history_seq
         )
-        if not has_pose_payload and not has_speed_payload and not has_history_payload:
+        if not has_pos_payload and not has_rot_payload and not has_speed_payload and not has_history_payload:
             return
 
         now = time.monotonic()
         if not self._connect_tcp_if_needed():
             return
 
-        pose_due = False
-        if has_pose_payload:
-            pose_due = (
-                self._should_publish_cached(
-                    "devicePos",
-                    self.latest_pos,
-                    now,
-                    self._last_tcp_payload,
-                    self._last_tcp_send,
-                )
-                or self._should_publish_cached(
-                    "deviceRot",
-                    self.latest_rot,
-                    now,
-                    self._last_tcp_payload,
-                    self._last_tcp_send,
-                )
+        pos_due = False
+        if has_pos_payload:
+            pos_due = self._should_publish_cached(
+                "devicePos",
+                self.latest_pos,
+                now,
+                self._last_tcp_payload,
+                self._last_tcp_send,
+            )
+
+        rot_due = False
+        if has_rot_payload:
+            rot_due = self._should_publish_cached(
+                "deviceRot",
+                self.latest_rot,
+                now,
+                self._last_tcp_payload,
+                self._last_tcp_send,
             )
 
         speed_due = False
@@ -825,11 +829,11 @@ class threadTrafficDataCollector(ThreadWithStop):
         if has_history_payload:
             history_due = (now - self._last_tcp_send["historyData"]) >= self._min_publish_period
 
-        if not pose_due and not speed_due and not history_due:
+        if not pos_due and not rot_due and not speed_due and not history_due:
             return
 
         # 실제 데이터 payload 전송 부분
-        if pose_due:
+        if pos_due:
             ok = self._send_tcp_json(
                 {
                     "reqORinfo": "info",
@@ -843,6 +847,7 @@ class threadTrafficDataCollector(ThreadWithStop):
             self._last_tcp_payload["devicePos"] = tuple(self.latest_pos)
             self._last_tcp_send["devicePos"] = now
 
+        if rot_due:
             ok = self._send_tcp_json(
                 {
                     "reqORinfo": "info",
