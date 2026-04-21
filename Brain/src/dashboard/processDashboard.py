@@ -192,17 +192,17 @@ class processDashboard(WorkerProcess):
         self._latest_semaphores = {}
         self._pending_semaphore_ids = set()
         self._last_semaphore_emit = 0.0
-        self._semaphore_emit_period_s = float(os.getenv("DASHBOARD_SEMAPHORE_EMIT_PERIOD", "0.25"))
+        self._semaphore_emit_period_s = float(os.getenv("DASHBOARD_SEMAPHORE_EMIT_PERIOD", "0.5"))
         self._semaphore_drain_limit = int(os.getenv("DASHBOARD_SEMAPHORE_DRAIN_LIMIT", "64"))
         self._last_camera_emit = 0.0
-        self._camera_emit_period_s = float(os.getenv("DASHBOARD_CAMERA_EMIT_PERIOD", "0.12"))
+        self._camera_emit_period_s = float(os.getenv("DASHBOARD_CAMERA_EMIT_PERIOD", "0.2")) 
         self._camera_loop_period_s = max(
             0.02,
             float(os.getenv("DASHBOARD_CAMERA_LOOP_PERIOD", str(self._camera_emit_period_s))),
         )
         self._camera_idle_loop_period_s = max(
             self._camera_loop_period_s,
-            float(os.getenv("DASHBOARD_CAMERA_IDLE_LOOP_PERIOD", "0.25")),
+            float(os.getenv("DASHBOARD_CAMERA_IDLE_LOOP_PERIOD", "0.25")),#수정 조심. pipe blocking 문제 생길수도있음
         )
         self._latest_camera_frame = None
         self._camera_frame_dirty = False

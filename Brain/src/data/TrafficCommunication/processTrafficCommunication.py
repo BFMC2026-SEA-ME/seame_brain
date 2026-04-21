@@ -574,6 +574,7 @@ class threadTrafficDataCollector(ThreadWithStop):
             "STATICCARONPARKING": "STATICCARONPARKING",
             "STATICCAR": "STATICCARONPARKING",
             "PARKEDCAR": "STATICCARONPARKING",
+            "CAR": "STATICCARONPARKING",
             "PEDESTRIAN": "PEDESTRIAN",
             "PEDESTRIANONROAD": "PEDESTRIANONROAD",
             "PERSON": "PEDESTRIAN",
