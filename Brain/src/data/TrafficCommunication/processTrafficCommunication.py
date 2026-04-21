@@ -761,7 +761,7 @@ class threadTrafficDataCollector(ThreadWithStop):
     def _send_tcp_json(self, payload):
         if self._sock is None:
             return False
-        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
         try:
             # tcp 통해서 json 형태로 데이터 전송
             self._sock.sendall(raw.encode("utf-8"))
