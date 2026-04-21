@@ -135,7 +135,7 @@ export class MapComponent {
         }
         const yaw = Number(payload.yaw);
         if (Number.isFinite(yaw)) {
-          this.currentPoseYawDeg = 90 - (yaw * 180.0) / Math.PI;
+          this.currentPoseYawDeg = -(yaw * 180.0) / Math.PI;
         }
 
         this.hasLocation = true;
