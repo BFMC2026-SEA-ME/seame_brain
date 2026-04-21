@@ -354,6 +354,10 @@ class threadTrafficDataCollector(ThreadWithStop):
         self.latest_pos = (x, y)
         # Use clockwise-positive yaw in [0, 360) to match external TCP test format.
         q = msg.pose.orientation
+        q_norm_sq = q.w**2 + q.x**2 + q.y**2 + q.z**2
+        if q_norm_sq < 0.9 or q_norm_sq > 1.1:
+            # degenerate/uninitialized quaternion — skip rotation update
+            return
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         yaw_deg_ccw = math.degrees(math.atan2(siny_cosp, cosy_cosp))
