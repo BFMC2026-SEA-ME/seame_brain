@@ -356,8 +356,6 @@ class threadTrafficDataCollector(ThreadWithStop):
         q = msg.pose.orientation
         q_norm_sq = q.w**2 + q.x**2 + q.y**2 + q.z**2
         if q_norm_sq < 0.9 or q_norm_sq > 1.1:
-            if self.latest_rot is None:
-                self.latest_rot = 0.0
             return
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
