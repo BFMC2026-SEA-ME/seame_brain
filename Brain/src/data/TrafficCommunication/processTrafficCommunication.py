@@ -82,7 +82,7 @@ class threadTrafficDataCollector(ThreadWithStop):
     HISTORY_TOPIC = "/obstacle_roi/event_xy"   # expected type: std_msgs/String ("class_name,x,y")
 
     def __init__(self, shared_memory, queues_list=None, logger=None, debugging=False):
-        super(threadTrafficDataCollector, self).__init__(pause=0.05) # 대충 20hz 정도 주기로 수신됨
+        super(threadTrafficDataCollector, self).__init__(pause=0.2) # 5Hz, CPU 절감
         self.shared_memory = shared_memory
         self.queues_list = queues_list
         self.logger = logger

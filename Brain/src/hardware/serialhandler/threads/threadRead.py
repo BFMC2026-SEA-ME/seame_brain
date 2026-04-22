@@ -164,6 +164,9 @@ class threadRead(ThreadWithStop):
         self._wheel_other_var = self._read_float_env("WHEEL_OTHER_VAR", 1e3)
         self._last_ros_publish_time = 0.0
         self._ros_publish_min_interval = float(os.getenv("ROS_PUBLISH_MIN_INTERVAL", "0.02"))
+        # Dashboard speed send rate limit (10Hz)
+        self._last_speed_send_time = 0.0
+        self._speed_send_min_interval = float(os.getenv("SPEED_SEND_MIN_INTERVAL", "0.1"))
 
         # For imuenc time
         self._imuenc_time_base_us = None
@@ -624,7 +627,10 @@ class threadRead(ThreadWithStop):
     def _handle_encoder_sample(self, rpm, velocity, distance, stamp=None, publish_ros=None):
         if publish_ros is None:
             publish_ros = self._should_publish_ros_sample()
-        self.currentSpeedSender.send(float(velocity) * float(self._wheel_vel_scale) * 100.0)
+        now = time.monotonic()
+        if now - self._last_speed_send_time >= self._speed_send_min_interval:
+            self._last_speed_send_time = now
+            self.currentSpeedSender.send(float(velocity) * float(self._wheel_vel_scale) * 100.0)
         if publish_ros:
             self._publish_wheel_encoder_and_twist([rpm, velocity, distance], stamp)
 
