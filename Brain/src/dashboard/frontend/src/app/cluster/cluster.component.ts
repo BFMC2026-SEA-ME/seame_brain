@@ -93,7 +93,7 @@ export class ClusterComponent {
 
     this.speedSubscription = this.webSocketService.receiveCurrentSpeed().subscribe(
       (message) => {
-        this.speed = Math.abs(parseInt(message.value)/10);
+        this.speed = Math.abs(Math.round(message.value));
       },
       (error) => {
         console.error('Error receiving speed:', error);
