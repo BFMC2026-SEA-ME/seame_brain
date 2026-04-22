@@ -626,6 +626,7 @@ class threadRead(ThreadWithStop):
             publish_ros = self._should_publish_ros_sample()
         if publish_ros:
             self._publish_wheel_encoder_and_twist([rpm, velocity, distance], stamp)
+            self.currentSpeedSender.send(float(velocity) * float(self._wheel_vel_scale))
 
     def _init_senders(self):
         self.enableButtonSender = messageHandlerSender(self.queuesList, EnableButton)
@@ -764,7 +765,7 @@ class threadRead(ThreadWithStop):
 
                     imu_values = self._parse_imu_values(value)
                     if imu_values is not None:
-                        roll, pitch, yaw, gyrox, gyroy, gyroz, accelx, accely, accelz, velx, vely, velz = imu_values
+                        roll, pitch, yaw, gyrox, gyroy, gyroz, accelx, accely, accelz, _, _, _ = imu_values
                         stamp = self._get_ros_now()
                         self._handle_imu_sample(
                             roll, pitch, yaw,
@@ -781,9 +782,8 @@ class threadRead(ThreadWithStop):
                 self.currentSteerSender.send(0.0)
 
             elif action == "speed":
-                speed = value.split(",")[0]
-                if self.is_float(speed):
-                    self.currentSpeedSender.send(float(speed))
+                # Dashboard speed now follows measured wheel encoder velocity.
+                pass
 
             elif action == "steer":
                 steer = value.split(",")[0]
