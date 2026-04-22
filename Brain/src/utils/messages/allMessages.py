@@ -236,6 +236,12 @@ class RequestMapNodes(Enum):
     msgID = 25
     msgType = "bool"
 
+class CameraStreamState(Enum):
+    Queue = "General"
+    Owner = "Dashboard"
+    msgID = 27
+    msgType = "bool"
+
 
 ################################# From Nucleo ##################################
 class BatteryLvl(Enum):

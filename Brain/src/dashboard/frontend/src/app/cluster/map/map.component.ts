@@ -109,7 +109,6 @@ export class MapComponent {
 
   private locationSubscription: Subscription | undefined;
   private semaphoresAndCarsSubscription: Subscription | undefined;
-  private mapNodesSubscription: Subscription | undefined;
   private lastPoseUpdateMs: number = 0;
   private readonly poseUpdatePeriodMs: number = 66;
 
@@ -136,7 +135,7 @@ export class MapComponent {
         }
         const yaw = Number(payload.yaw);
         if (Number.isFinite(yaw)) {
-          this.currentPoseYawDeg = (yaw * 180.0) / Math.PI;
+          this.currentPoseYawDeg = -(yaw * 180.0) / Math.PI;
         }
 
         this.hasLocation = true;
@@ -172,45 +171,7 @@ export class MapComponent {
       },
     );
 
-    this.mapNodesSubscription = this.webSocketService.receiveMapNodes().subscribe(
-      (message) => {
-        const payload = (message as any)?.value ?? message;
-        if (!payload || !payload.nodes) {
-          return;
-        }
-
-        if (payload.bounds) {
-          this.graphBounds = payload.bounds;
-        }
-
-        this.graphNodes = (payload.nodes as any[]).map((node) => {
-          const svg = this.graphToSvg(node.x, node.y);
-          return {
-            id: String(node.id),
-            x: Number(node.x),
-            y: Number(node.y),
-            xSvg: svg.x,
-            ySvg: svg.y
-          };
-        });
-        if (!this.hasLocation && this.graphBounds) {
-          const centerGraphX = (this.graphBounds.min_x + this.graphBounds.max_x) / 2;
-          const centerGraphY = (this.graphBounds.min_y + this.graphBounds.max_y) / 2;
-          const centerPct = this.graphToPercent(centerGraphX, centerGraphY);
-          this.mapX = centerPct.x;
-          this.mapY = centerPct.y;
-        }
-
-        if (this.currentPoseGraph) {
-          this.currentPoseSvg = this.graphToSvg(this.currentPoseGraph.x, this.currentPoseGraph.y);
-          this.currentPoseNodeId = this.findNearestNodeId(this.currentPoseGraph.x, this.currentPoseGraph.y);
-          this.markCheckpointAsPassed(this.currentPoseNodeId);
-        }
-
-        this.updateMap();
-      },
-    );
-    this.webSocketService.sendMessageToFlask('{\"Name\": \"RequestMapNodes\", \"Value\": true}');
+    void this.loadMapNodes();
     this.updateMap()
   }
 
@@ -221,9 +182,54 @@ export class MapComponent {
     if (this.semaphoresAndCarsSubscription) {
       this.semaphoresAndCarsSubscription.unsubscribe();
     }
-    if (this.mapNodesSubscription) {
-      this.mapNodesSubscription.unsubscribe();
+  }
+
+  private async loadMapNodes(): Promise<void> {
+    try {
+      const payload = await this.webSocketService.fetchMapNodes();
+      this.applyMapNodesPayload(payload);
+    } catch (error) {
+      console.error('Failed to load map nodes', error);
     }
+  }
+
+  private applyMapNodesPayload(payload: any): void {
+    if (!payload || !Array.isArray(payload.nodes)) {
+      return;
+    }
+
+    if (payload.bounds) {
+      this.graphBounds = payload.bounds;
+    }
+
+    this.graphNodes = payload.nodes.map((node: any) => {
+      const x = Number(node.x);
+      const y = Number(node.y);
+      const svg = this.graphToSvg(x, y);
+      return {
+        id: String(node.id),
+        x,
+        y,
+        xSvg: svg.x,
+        ySvg: svg.y
+      };
+    });
+
+    if (!this.hasLocation && this.graphBounds) {
+      const centerGraphX = (this.graphBounds.min_x + this.graphBounds.max_x) / 2;
+      const centerGraphY = (this.graphBounds.min_y + this.graphBounds.max_y) / 2;
+      const centerPct = this.graphToPercent(centerGraphX, centerGraphY);
+      this.mapX = centerPct.x;
+      this.mapY = centerPct.y;
+    }
+
+    if (this.currentPoseGraph) {
+      this.currentPoseSvg = this.graphToSvg(this.currentPoseGraph.x, this.currentPoseGraph.y);
+      this.currentPoseNodeId = this.findNearestNodeId(this.currentPoseGraph.x, this.currentPoseGraph.y);
+      this.markCheckpointAsPassed(this.currentPoseNodeId);
+    }
+
+    this.updateMap();
   }
 
   onLoadCursor(): void {

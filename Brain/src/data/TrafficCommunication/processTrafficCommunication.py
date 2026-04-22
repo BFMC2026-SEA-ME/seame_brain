@@ -34,8 +34,10 @@ if __name__ == "__main__":
 import json
 import math
 import os
+import queue
 import select
 import socket
+import threading
 import time
 from multiprocessing import Pipe
 from src.data.TrafficCommunication.useful.sharedMem import sharedMem
@@ -60,9 +62,10 @@ except Exception:
     QoSReliabilityPolicy = None
 
 try:
-    from geometry_msgs.msg import PoseStamped, Vector3Stamped, TwistWithCovarianceStamped
+    from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Vector3Stamped, TwistWithCovarianceStamped
 except Exception:
     PoseStamped = None
+    PoseWithCovarianceStamped = None
     Vector3Stamped = None
     TwistWithCovarianceStamped = None
 
@@ -82,7 +85,7 @@ class threadTrafficDataCollector(ThreadWithStop):
     HISTORY_TOPIC = "/obstacle_roi/event_xy"   # expected type: std_msgs/String ("class_name,x,y")
 
     def __init__(self, shared_memory, queues_list=None, logger=None, debugging=False):
-        super(threadTrafficDataCollector, self).__init__(pause=0.05)
+        super(threadTrafficDataCollector, self).__init__(pause=0.05) # 20Hz, 10Hz GPS 패킷 손실 방지
         self.shared_memory = shared_memory
         self.queues_list = queues_list
         self.logger = logger
@@ -132,11 +135,30 @@ class threadTrafficDataCollector(ThreadWithStop):
         # [ADDED] Server upload payload is refreshed at 1 Hz.
         self._min_publish_period = 1.0  # seconds
         self._last_insert = {"devicePos": 0.0, "deviceRot": 0.0, "deviceSpeed": 0.0, "historyData": 0.0}
-        self._last_tcp_send = 0.0
+        self._publish_heartbeat_period = max(
+            self._min_publish_period,
+            float(os.getenv("TRAFFIC_PUBLISH_HEARTBEAT_PERIOD", str(self._min_publish_period))),
+        )
+        self._position_change_epsilon = float(os.getenv("TRAFFIC_POSITION_CHANGE_EPSILON_M", "0.05"))
+        self._rotation_change_epsilon = float(os.getenv("TRAFFIC_ROTATION_CHANGE_EPSILON_DEG", "1.0"))
+        self._speed_change_epsilon = float(os.getenv("TRAFFIC_SPEED_CHANGE_EPSILON_CMS", "2.0"))
+        self._last_shared_payload = {"devicePos": None, "deviceRot": None, "deviceSpeed": None}
+        self._last_tcp_send = {"devicePos": 0.0, "deviceRot": 0.0, "deviceSpeed": 0.0, "historyData": 0.0}
+        self._last_tcp_payload = {"devicePos": None, "deviceRot": None, "deviceSpeed": None}
+
+        # TCP socket lock: shared between main thread (send) and RX thread (recv)
+        self._sock_lock = threading.Lock()
+        # GPS coordinates received from server, passed from RX thread to main thread for ROS publish
+        self._gps_rx_queue: queue.SimpleQueue = queue.SimpleQueue()
+        # RX thread handle
+        self._tcp_rx_thread: threading.Thread | None = None
 
         # direct TCP sender (based on proven test script)
         self._tcp_enabled = os.getenv("TRAFFIC_SIMPLE_TCP_ENABLE", "1").lower() in ("1", "true", "yes", "y")
-        self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.60") # 기훈이형 pc ip 
+        # self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.247") # 기훈이형 pc ip 
+        self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.20") # 기훈이형 pc ip 
+
+        
         self._tcp_port = int(os.getenv("TRAFFIC_TCP_PORT", "5000"))
         self._tcp_bind_ip = os.getenv("TRAFFIC_TCP_BIND_IP", "").strip()
         self._tcp_timeout = float(os.getenv("TRAFFIC_TCP_CONNECT_TIMEOUT", "3.0"))
@@ -181,7 +203,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         if self.queues_list is not None:
             try:
                 self._semaphore_subscriber = messageHandlerSubscriber(
-                    self.queues_list, Semaphores, "fifo", True
+                    self.queues_list, Semaphores, "lastOnly", True
                 )
             except Exception:
                 self._semaphore_subscriber = None
@@ -228,10 +250,11 @@ class threadTrafficDataCollector(ThreadWithStop):
                 )
 
     def thread_work(self):
+        self._ensure_tcp_rx_thread()
         self._spin_ros_once()
         self._flush_to_shared_memory()
         self._flush_to_tcp()
-        self._poll_tcp_rx()
+        self._drain_gps_rx_queue()   # RX 스레드에서 받은 GPS 좌표를 ROS publish
         self._poll_cars_queue()
         self._poll_semaphore_queue()
         self._poll_udp_rx()
@@ -241,10 +264,13 @@ class threadTrafficDataCollector(ThreadWithStop):
             self._log_ros_match_status()
 
     def stop(self):
+        super(threadTrafficDataCollector, self).stop()  # _blocker.set() → RX 스레드 루프 종료
         self._close_tcp()
+        if self._tcp_rx_thread is not None and self._tcp_rx_thread.is_alive():
+            self._tcp_rx_thread.join(timeout=1.0)
+            self._tcp_rx_thread = None
         self._close_udp()
         self._close_ros()
-        super(threadTrafficDataCollector, self).stop()
 
     # 정기적으로 ROS TOPIC 구독
     def _spin_ros_once(self):
@@ -277,6 +303,7 @@ class threadTrafficDataCollector(ThreadWithStop):
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
             )
             if PoseStamped is not None:
+                # global pose 구독해서 위치/회전 정보 가져오기
                 self._ros_node.create_subscription(PoseStamped, self.POS_TOPIC, self._on_pos, sensor_qos)
             if Vector3Stamped is not None:
                 self._ros_node.create_subscription(Vector3Stamped, self.SPEED_TOPIC, self._on_speed, sensor_qos)
@@ -296,9 +323,9 @@ class threadTrafficDataCollector(ThreadWithStop):
                     self._traffic_color_pub_fixed = self._ros_node.create_publisher(
                         StringMsg, "/traffic_color", 10
                     )
-            if PoseStamped is not None:
+            if PoseWithCovarianceStamped is not None:
                 self._gps_pub = self._ros_node.create_publisher(
-                    PoseStamped, self._gps_topic, 10
+                    PoseWithCovarianceStamped, self._gps_topic, 10
                 )
             subs = [self.POS_TOPIC, self.SPEED_TOPIC]
             if self._use_twist_speed_source:
@@ -334,12 +361,16 @@ class threadTrafficDataCollector(ThreadWithStop):
             self._ros_initialized_here = False
 
     # [ADDED] Topic callbacks -> local cache.
+    # global pose 콜백함수 
     def _on_pos(self, msg):
         x = float(msg.pose.position.x)
         y = float(msg.pose.position.y)
         self.latest_pos = (x, y)
         # Use clockwise-positive yaw in [0, 360) to match external TCP test format.
         q = msg.pose.orientation
+        q_norm_sq = q.w**2 + q.x**2 + q.y**2 + q.z**2
+        if q_norm_sq < 0.9 or q_norm_sq > 1.1:
+            return
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         yaw_deg_ccw = math.degrees(math.atan2(siny_cosp, cosy_cosp))
@@ -563,6 +594,7 @@ class threadTrafficDataCollector(ThreadWithStop):
             "STATICCARONPARKING": "STATICCARONPARKING",
             "STATICCAR": "STATICCARONPARKING",
             "PARKEDCAR": "STATICCARONPARKING",
+            "CAR": "STATICCARONPARKING",
             "PEDESTRIAN": "PEDESTRIAN",
             "PEDESTRIANONROAD": "PEDESTRIANONROAD",
             "PERSON": "PEDESTRIAN",
@@ -576,19 +608,72 @@ class threadTrafficDataCollector(ThreadWithStop):
         }
         return alias_map.get(normalized)
 
+    def _angle_diff_deg(self, current, previous):
+        return abs((float(current) - float(previous) + 180.0) % 360.0 - 180.0)
+
+    def _payload_changed(self, key, current, previous):
+        if previous is None:
+            return True
+
+        if key == "devicePos":
+            return math.hypot(
+                float(current[0]) - float(previous[0]),
+                float(current[1]) - float(previous[1]),
+            ) >= self._position_change_epsilon
+
+        if key == "deviceRot":
+            return self._angle_diff_deg(current, previous) >= self._rotation_change_epsilon
+
+        if key == "deviceSpeed":
+            return abs(float(current) - float(previous)) >= self._speed_change_epsilon
+
+        return current != previous
+
+    def _should_publish_cached(self, key, current, now, last_payloads, last_sent):
+        previous = last_payloads.get(key)
+        if previous is None:
+            return True
+
+        if self._payload_changed(key, current, previous):
+            return (now - last_sent.get(key, 0.0)) >= self._min_publish_period
+
+        return (now - last_sent.get(key, 0.0)) >= self._publish_heartbeat_period
+
+    #  shared memory에 업데이트 
     def _flush_to_shared_memory(self):
         now = time.monotonic()
 
-        if self.latest_pos is not None and (now - self._last_insert["devicePos"]) >= self._min_publish_period:
+        if self.latest_pos is not None and self._should_publish_cached(
+            "devicePos",
+            self.latest_pos,
+            now,
+            self._last_shared_payload,
+            self._last_insert,
+        ):
             self.shared_memory.insert("devicePos", [self.latest_pos[0], self.latest_pos[1]])
+            self._last_shared_payload["devicePos"] = tuple(self.latest_pos)
             self._last_insert["devicePos"] = now
 
-        if self.latest_rot is not None and (now - self._last_insert["deviceRot"]) >= self._min_publish_period:
+        if self.latest_rot is not None and self._should_publish_cached(
+            "deviceRot",
+            self.latest_rot,
+            now,
+            self._last_shared_payload,
+            self._last_insert,
+        ):
             self.shared_memory.insert("deviceRot", [self.latest_rot])
+            self._last_shared_payload["deviceRot"] = float(self.latest_rot)
             self._last_insert["deviceRot"] = now
 
-        if self.latest_speed is not None and (now - self._last_insert["deviceSpeed"]) >= self._min_publish_period:
+        if self.latest_speed is not None and self._should_publish_cached(
+            "deviceSpeed",
+            self.latest_speed,
+            now,
+            self._last_shared_payload,
+            self._last_insert,
+        ):
             self.shared_memory.insert("deviceSpeed", [self.latest_speed])
+            self._last_shared_payload["deviceSpeed"] = float(self.latest_speed)
             self._last_insert["deviceSpeed"] = now
 
         # [ADDED][historyData] push new /obstacle/event_xy event as historyData(value1=id, value2=x, value3=y).
@@ -609,12 +694,13 @@ class threadTrafficDataCollector(ThreadWithStop):
             self._last_shared_history_seq = self._history_update_seq
 
     def _close_tcp(self):
-        if self._sock is not None:
-            try:
-                self._sock.close()
-            except Exception:
-                pass
-            self._sock = None
+        with self._sock_lock:
+            if self._sock is not None:
+                try:
+                    self._sock.close()
+                except Exception:
+                    pass
+                self._sock = None
         self._tcp_rx_buffer = ""
 
     def _close_udp(self):
@@ -663,8 +749,9 @@ class threadTrafficDataCollector(ThreadWithStop):
     def _connect_tcp_if_needed(self):
         if not self._tcp_enabled:
             return False
-        if self._sock is not None:
-            return True
+        with self._sock_lock:
+            if self._sock is not None:
+                return True
 
         now = time.monotonic()
         if now < self._next_tcp_retry:
@@ -677,7 +764,8 @@ class threadTrafficDataCollector(ThreadWithStop):
             sock.settimeout(self._tcp_timeout)
             sock.connect((self._tcp_host, self._tcp_port))
             sock.settimeout(None)
-            self._sock = sock
+            with self._sock_lock:
+                self._sock = sock
             print(
                 f"\033[1;97m[ Traffic Communication ] :\033[0m "
                 f"\033[1;92mINFO\033[0m - Simple TCP connected to "
@@ -689,38 +777,80 @@ class threadTrafficDataCollector(ThreadWithStop):
             self._next_tcp_retry = now + 3.0
             return False
 
+    
     def _send_tcp_json(self, payload):
-        if self._sock is None:
-            return False
-        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        try:
-            self._sock.sendall(raw.encode("utf-8"))
-            return True
-        except Exception:
-            self._close_tcp()
-            self._next_tcp_retry = time.monotonic() + 3.0
-            return False
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+        with self._sock_lock:
+            if self._sock is None:
+                return False
+            try:
+                # tcp 통해서 json 형태로 데이터 전송
+                self._sock.sendall(raw.encode("utf-8"))
+                return True
+            except Exception:
+                pass
+        self._close_tcp()
+        self._next_tcp_retry = time.monotonic() + 3.0
+        return False
 
     def _flush_to_tcp(self):
         if not self._tcp_enabled:
             return
-        has_pose_payload = self.latest_pos is not None and self.latest_rot is not None
+        has_pos_payload = self.latest_pos is not None
+        has_rot_payload = self.latest_rot is not None
+        has_pose_payload = has_pos_payload or has_rot_payload
         has_speed_payload = self._tcp_send_speed and self.latest_speed is not None
         # [ADDED][historyData] send each new history event once over TCP.
         has_history_payload = (
             self.latest_history is not None
             and self._history_update_seq != self._last_tcp_history_seq
         )
-        if not has_pose_payload and not has_speed_payload and not has_history_payload:
+        if not has_pos_payload and not has_rot_payload and not has_speed_payload and not has_history_payload:
             return
 
         now = time.monotonic()
-        if (now - self._last_tcp_send) < self._min_publish_period:
-            return
         if not self._connect_tcp_if_needed():
             return
 
-        if has_pose_payload:
+        pos_due = False
+        if has_pos_payload:
+            pos_due = self._should_publish_cached(
+                "devicePos",
+                self.latest_pos,
+                now,
+                self._last_tcp_payload,
+                self._last_tcp_send,
+            )
+
+        rot_due = False
+        if has_rot_payload:
+            rot_due = self._should_publish_cached(
+                "deviceRot",
+                self.latest_rot,
+                now,
+                self._last_tcp_payload,
+                self._last_tcp_send,
+            )
+
+        speed_due = False
+        if has_speed_payload:
+            speed_due = self._should_publish_cached(
+                "deviceSpeed",
+                self.latest_speed,
+                now,
+                self._last_tcp_payload,
+                self._last_tcp_send,
+            )
+
+        history_due = False
+        if has_history_payload:
+            history_due = (now - self._last_tcp_send["historyData"]) >= self._min_publish_period
+
+        if not pos_due and not rot_due and not speed_due and not history_due:
+            return
+
+        # 실제 데이터 payload 전송 부분
+        if pos_due:
             ok = self._send_tcp_json(
                 {
                     "reqORinfo": "info",
@@ -731,7 +861,10 @@ class threadTrafficDataCollector(ThreadWithStop):
             )
             if not ok:
                 return
+            self._last_tcp_payload["devicePos"] = tuple(self.latest_pos)
+            self._last_tcp_send["devicePos"] = now
 
+        if rot_due:
             ok = self._send_tcp_json(
                 {
                     "reqORinfo": "info",
@@ -741,8 +874,10 @@ class threadTrafficDataCollector(ThreadWithStop):
             )
             if not ok:
                 return
+            self._last_tcp_payload["deviceRot"] = float(self.latest_rot)
+            self._last_tcp_send["deviceRot"] = now
 
-        if has_speed_payload:
+        if speed_due:
             speed_value = float(self.latest_speed)
             speed_source = self._speed_source if self._speed_source is not None else "unknown"
             ok = self._send_tcp_json(
@@ -754,10 +889,12 @@ class threadTrafficDataCollector(ThreadWithStop):
             )
             if not ok:
                 return
+            self._last_tcp_payload["deviceSpeed"] = speed_value
+            self._last_tcp_send["deviceSpeed"] = now
             if self._verbose_log:
                 self._log_speed_sent(speed_value, speed_source)
 
-        if has_history_payload:
+        if history_due:
             ok = self._send_tcp_json(
                 {
                     "reqORinfo": "info",
@@ -770,44 +907,98 @@ class threadTrafficDataCollector(ThreadWithStop):
             if not ok:
                 return
             self._last_tcp_history_seq = self._history_update_seq
+            self._last_tcp_send["historyData"] = now
 
-        self._last_tcp_send = now
-
-    def _poll_tcp_rx(self):
+    def _ensure_tcp_rx_thread(self):
+        """RX 전용 스레드가 없거나 죽었으면 재시작."""
         if not self._tcp_enabled:
             return
-        if self._sock is None:
-            self._connect_tcp_if_needed()
+        if self._tcp_rx_thread is not None and self._tcp_rx_thread.is_alive():
             return
+        t = threading.Thread(target=self._tcp_rx_loop, daemon=True, name="tcp_rx_loop")
+        t.start()
+        self._tcp_rx_thread = t
 
-        while True:
+    def _tcp_rx_loop(self):
+        """별도 스레드: TCP 수신 전용 루프. select 블로킹으로 GPS 지연 최소화."""
+        rx_buffer = ""
+        while not self._blocker.is_set():
+            # 소켓 연결 대기
+            with self._sock_lock:
+                sock = self._sock
+            if sock is None:
+                time.sleep(0.1)
+                continue
+
             try:
-                readable, _, _ = select.select([self._sock], [], [], 0.0)
+                readable, _, _ = select.select([sock], [], [], 0.05)
             except Exception:
                 self._close_tcp()
                 self._next_tcp_retry = time.monotonic() + 3.0
-                return
+                time.sleep(0.1)
+                continue
 
             if not readable:
-                break
+                continue
 
             try:
-                chunk = self._sock.recv(4096)
+                chunk = sock.recv(4096)
             except BlockingIOError:
-                break
+                continue
             except Exception:
                 self._close_tcp()
                 self._next_tcp_retry = time.monotonic() + 3.0
-                return
+                time.sleep(0.1)
+                continue
 
             if not chunk:
                 self._close_tcp()
                 self._next_tcp_retry = time.monotonic() + 3.0
-                return
+                time.sleep(0.1)
+                continue
 
-            self._tcp_rx_buffer += chunk.decode("utf-8", errors="ignore")
+            rx_buffer += chunk.decode("utf-8", errors="ignore")
+            rx_buffer = self._consume_rx_buffer_in_thread(rx_buffer)
 
-        self._consume_tcp_rx_buffer()
+    def _consume_rx_buffer_in_thread(self, rx_buffer: str) -> str:
+        """RX 스레드 전용 버퍼 파싱. GPS(x,y)만 큐에 넣고 나머지는 무시."""
+        decoder = json.JSONDecoder()
+        while True:
+            rx_buffer = rx_buffer.lstrip()
+            if not rx_buffer:
+                return ""
+
+            if rx_buffer[0] not in "{[":
+                next_start = min(
+                    [idx for idx in (rx_buffer.find("{"), rx_buffer.find("[")) if idx >= 0],
+                    default=-1,
+                )
+                if next_start == -1:
+                    return ""
+                rx_buffer = rx_buffer[next_start:]
+                continue
+
+            try:
+                payload, end_idx = decoder.raw_decode(rx_buffer)
+            except ValueError:
+                return rx_buffer  # 불완전한 프레임, 다음 recv까지 보관
+
+            rx_buffer = rx_buffer[end_idx:]
+
+            gps_xy = self._extract_gps_xy(payload)
+            if gps_xy is not None:
+                self._gps_rx_queue.put((gps_xy[0], gps_xy[1], time.time()))
+            # 계속 루프 → 버퍼에 남은 프레임 처리
+        return rx_buffer  # unreachable, 타입 힌트 만족용
+
+    def _drain_gps_rx_queue(self):
+        """메인 스레드: RX 스레드가 쌓아 둔 GPS 좌표를 ROS publish."""
+        while not self._gps_rx_queue.empty():
+            try:
+                x, y, rx_time = self._gps_rx_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._publish_gps(x, y, rx_time)
 
     def _poll_udp_rx(self):
         if not self._udp_enabled:
@@ -1076,24 +1267,32 @@ class threadTrafficDataCollector(ThreadWithStop):
             return None
         return (x, y)
 
-    def _publish_gps(self, x, y):
-        if self._ros_node is None or self._gps_pub is None or PoseStamped is None:
+    def _publish_gps(self, x, y, rx_time: float | None = None):
+        if self._ros_node is None or self._gps_pub is None or PoseWithCovarianceStamped is None:
             return
-        now = time.monotonic()
-        if self._gps_min_publish_period > 0.0 and (now - self._last_gps_publish) < self._gps_min_publish_period:
+        # period 체크는 수신 시각 기준으로 → drain 한 번에 여러 패킷이 쌓여도 모두 publish 가능
+        check_time = rx_time if rx_time is not None else time.time()
+        if self._gps_min_publish_period > 0.0 and (check_time - self._last_gps_publish) < self._gps_min_publish_period:
             return
-        msg = PoseStamped()
-        msg.header.stamp = self._ros_node.get_clock().now().to_msg()
+        msg = PoseWithCovarianceStamped()
+        # rx_time이 있으면 TCP 수신 시각을 타임스탬프로 사용, 없으면 현재 ROS 시간
+        if rx_time is not None:
+            sec = int(rx_time)
+            nanosec = int((rx_time - sec) * 1e9)
+            msg.header.stamp.sec = sec
+            msg.header.stamp.nanosec = nanosec
+        else:
+            msg.header.stamp = self._ros_node.get_clock().now().to_msg()
         msg.header.frame_id = self._gps_frame_id
-        msg.pose.position.x = float(x)
-        msg.pose.position.y = float(y)
-        msg.pose.position.z = 0.0
-        msg.pose.orientation.x = 0.0
-        msg.pose.orientation.y = 0.0
-        msg.pose.orientation.z = 0.0
-        msg.pose.orientation.w = 1.0
+        msg.pose.pose.position.x = float(x)
+        msg.pose.pose.position.y = float(y)
+        msg.pose.pose.position.z = 0.0
+        msg.pose.pose.orientation.x = 0.0
+        msg.pose.pose.orientation.y = 0.0
+        msg.pose.pose.orientation.z = 0.0
+        msg.pose.pose.orientation.w = 1.0
         self._gps_pub.publish(msg)
-        self._last_gps_publish = now
+        self._last_gps_publish = check_time
 
     def _log_waiting_pose(self):
         if not self._tcp_enabled:
@@ -1251,7 +1450,7 @@ if __name__ == "__main__":
     start_time = time.time()
     duration = 10  # specify the duration in seconds
     
-    shared_memory.insert("devicePos", [1.2, 2.3]) # send a position to the server
+    shared_memory.insert("devicePos", [1.2, 2.3]) # send a position x, y to the server
     shared_memory.insert("deviceRot", [3.4]) # send a rotation to the server
     shared_memory.insert("deviceSpeed", [4.5]) # send a speed to the server
     shared_memory.insert("historyData", [5.6, 6.7, 8]) # send a history data point to the server

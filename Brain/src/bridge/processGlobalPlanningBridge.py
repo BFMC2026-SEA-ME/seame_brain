@@ -274,6 +274,7 @@ class GlobalPlanningBridgeNode(Node):
         except Exception as exc:
             self.get_logger().warning(f"Failed to subscribe {self._global_pose_topic}: {exc}")
 
+        # yolo obj detection 결과 수신 토픽들 
         self._event_xy_topic = str(os.environ.get("ROAD_SIGN_EVENT_XY_TOPIC", "/obstacle_roi/event_xy"))
         self._obstacle_roi_topic = str(os.environ.get("ROAD_SIGN_OBSTACLE_ROI_TOPIC", "/obstacle_roi"))
         self._event_xy_sub = None
@@ -356,6 +357,7 @@ class GlobalPlanningBridgeNode(Node):
             pose.orientation.w,
         )
 
+    # yolo obj 콜백 
     def _on_event_xy(self, msg: String) -> None:
         self._handle_road_sign_payload(msg.data, self._event_xy_topic)
 
@@ -438,6 +440,7 @@ class GlobalPlanningBridgeNode(Node):
 
         return None
 
+    # 클래스 네임 매칭 
     def _to_canonical_class_name(self, normalized: str) -> Optional[str]:
         # Handle common highway aliases/variants first.
         if "HIGHWAY" in normalized:

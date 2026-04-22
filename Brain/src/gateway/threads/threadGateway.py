@@ -120,9 +120,11 @@ class threadGateway(ThreadWithStop):
         Value = message["msgValue"]
         if (Owner, Id) in self.messageApproved:
             to_remove = []
+            # 병렬로 보내는게 아니라, 한줄로 순서대로 보낸다. 병렬로 보내면 메시지 순서가 뒤죽박죽이 될 수 있다.
             for element, pipe in self.sendingList[Owner][Id].items():
                 # We send a dictionary that contain the type of the message and message
                 try:
+                    # sub이 수신안하면 막힐수도있다.(버퍼가 꽉차서)
                     pipe.send({"Type": Type, "value": Value, "id": Id, "Owner": Owner})
                     if self.debugging:
                         self.logger.warning(message)

@@ -45,6 +45,16 @@ from src.utils.messages.messageHandlerSender import messageHandlerSender
 from src.statemachine.systemMode import SystemMode
 from src.utils.messages.allMessages import StateChange, SerialConnectionState
 
+
+def _open_serial_port(device, baudrate=115200, timeout=0.1):
+    """Open the serial port with POSIX exclusive access when available."""
+    try:
+        return serial.Serial(device, baudrate, timeout=timeout, exclusive=True)
+    except TypeError:
+        # Older pyserial versions do not support the exclusive kwarg.
+        return serial.Serial(device, baudrate, timeout=timeout)
+
+
 class processSerialHandler(WorkerProcess):
     """This process handle connection between NUCLEO and Raspberry PI.\n
     Args:
@@ -107,16 +117,21 @@ class processSerialHandler(WorkerProcess):
                 self._safe_close_serial()
 
                 self.serialDevice = next((port.device for port in serial.tools.list_ports.comports() if re.match(r"/dev/ttyACM\d+", port.device)), None)
-                self.serialCon = serial.Serial(self.serialDevice, 115200, timeout=0.1)
+                self.serialCon = _open_serial_port(self.serialDevice, 115200, timeout=0.1)
                 self.serialCon.reset_input_buffer()
                 self.serialCon.reset_output_buffer()
                 self.serialConnected = True
                 print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;92mINFO\033[0m - Connected to \033[94m{self.serialDevice}\033[0m")
 
-            except (serial.SerialException, FileNotFoundError):
+            except (serial.SerialException, FileNotFoundError, OSError) as exc:
                 self._safe_close_serial()
                 self.serialCon = None
                 self.serialConnected = False
+                if self.serialDevice is not None and self.debugging:
+                    print(
+                        f"\033[1;97m[ Serial Handler ] :\033[0m "
+                        f"\033[1;93mWARNING\033[0m - Failed to open \033[94m{self.serialDevice}\033[0m: {exc}"
+                    )
 
     def _try_reconnect(self):
         """Try to reconnect to serial device (called by timer)."""

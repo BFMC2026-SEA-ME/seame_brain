@@ -74,5 +74,4 @@ Brain/temp/*.log
 .DS_Store
 **/.DS_Store
 
-# Claude Code instructions (local only)
 CLAUDE.md

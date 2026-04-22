@@ -2,20 +2,14 @@
 # All rights reserved.
 # (BSD-3 Clause)
 
-import base64
 import time
 from typing import Optional, Tuple
-
-import cv2
-import numpy as np
 
 from src.templates.threadwithstop import ThreadWithStop
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
-from src.utils.messages.allMessages import serialCamera, StateChange
+from src.utils.messages.allMessages import CameraStreamState, StateChange, serialCamera
 from src.statemachine.systemMode import SystemMode
-
-from rclpy.qos import qos_profile_sensor_data
 
 
 class RosCameraThread(ThreadWithStop):
@@ -41,24 +35,29 @@ class RosCameraThread(ThreadWithStop):
         jpeg_quality: int = 60,  # 낮출수록 용량 감소
         passthrough_compressed: bool = True,
     ):
-        super(RosCameraThread, self).__init__(pause=0.01)
+        super(RosCameraThread, self).__init__(pause=0.0)
 
         self.queuesList = queuesList
         self.logger = logger
         self.debugging = debugging
 
         self.topic_name = topic_name
-        self.keepalive_sec = keepalive_sec
-        self.min_frame_interval = min_frame_interval
-        self.init_retry_sec = init_retry_sec
+        self.keepalive_sec = max(0.0, float(keepalive_sec))
+        self.min_frame_interval = max(0.0, float(min_frame_interval))
+        self.init_retry_sec = max(0.1, float(init_retry_sec))
         self.node_name = node_name
         self.downscale_size = downscale_size
         self.jpeg_quality = jpeg_quality
         self.passthrough_compressed = passthrough_compressed
+        self._spin_timeout_sec = self._compute_spin_timeout()
+        self._retry_sleep_sec = min(0.25, self.init_retry_sec)
 
         self.serialCameraSender = messageHandlerSender(self.queuesList, serialCamera, drop_old=True)
         self.stateChangeSubscriber = messageHandlerSubscriber(
             self.queuesList, StateChange, "lastOnly", True
+        )
+        self.cameraStreamStateSubscriber = messageHandlerSubscriber(
+            self.queuesList, CameraStreamState, "lastOnly", True
         )
 
         self._compressed_topic = (
@@ -71,11 +70,14 @@ class RosCameraThread(ThreadWithStop):
         self._rclpy = None
         self._executor = None
         self._node = None
+        self._cv2 = None
+        self._np = None
 
         self._last_payload: Optional[bytes] = None
         self._last_emit_ts: float = 0.0
         self._last_send_ts: float = 0.0
         self._last_init_try_ts: float = 0.0
+        self._stream_enabled: bool = False
 
     # ================================ STATE CHANGE ====================================
     def state_change_handler(self):
@@ -88,36 +90,47 @@ class RosCameraThread(ThreadWithStop):
             else:
                 self.pause()
 
+        stream_message = self.cameraStreamStateSubscriber.receive()
+        if stream_message is not None:
+            self._stream_enabled = bool(stream_message)
+            if not self._stream_enabled:
+                self._last_payload = None
+                self._last_emit_ts = 0.0
+
     # ================================ RUN ============================================
     def thread_work(self):
         # 1) ROS Node 없으면 초기화 시도 (realsense 노드 외부 실행)
         if self._node is None:
-            now = time.time()
+            now = time.monotonic()
             if now - self._last_init_try_ts >= self.init_retry_sec:
                 self._last_init_try_ts = now
                 self._maybe_init_ros()
-            time.sleep(0.05)
+            self._blocker.wait(self._retry_sleep_sec)
             return
 
         # 2) rclpy 컨텍스트 죽었으면 리셋 후 재시도
         if self._rclpy is not None and not self._rclpy.ok():
             self._reset_ros_context()
-            time.sleep(0.1)
+            self._blocker.wait(0.1)
             return
 
         # 3) executor spin
         try:
             if self._executor is not None:
-                self._executor.spin_once(timeout_sec=0.02)
+                self._executor.spin_once(timeout_sec=self._spin_timeout_sec)
         except Exception as exc:
             print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;91mERROR\033[0m - spin_once failed: {exc}")
             self._reset_ros_context()
-            time.sleep(0.1)
+            self._blocker.wait(0.1)
             return
 
         # 4) keepalive: 마지막 프레임 재전송
-        now = time.time()
-        if self._last_payload is not None and now - self._last_emit_ts >= self.keepalive_sec:
+        now = time.monotonic()
+        if (
+            self.keepalive_sec > 0.0
+            and self._last_payload is not None
+            and now - self._last_emit_ts >= self.keepalive_sec
+        ):
             self.serialCameraSender.send(self._last_payload)
             self._last_emit_ts = now
 
@@ -127,6 +140,15 @@ class RosCameraThread(ThreadWithStop):
         super(RosCameraThread, self).stop()
 
     # ================================ INTERNALS =======================================
+    def _get_image_codec_modules(self):
+        if self._cv2 is None or self._np is None:
+            import cv2
+            import numpy as np
+
+            self._cv2 = cv2
+            self._np = np
+        return self._cv2, self._np
+
     def _maybe_init_ros(self):
         """ROS2 초기화 및 구독 설정."""
         if self._node is not None or self._ros_import_error:
@@ -181,7 +203,10 @@ class RosCameraThread(ThreadWithStop):
 
                 def listener_callback(self, msg):
                     try:
-                        now_ts = time.time()
+                        now_ts = time.monotonic()
+
+                        if not outer_self._stream_enabled:
+                            return
 
                         # FPS 제한: 너무 많이 보내면 대시보드/큐가 밀릴 수 있음
                         if now_ts - outer_self._last_send_ts < outer_self.min_frame_interval:
@@ -193,6 +218,7 @@ class RosCameraThread(ThreadWithStop):
                         # 해상도/품질 낮춰서 전송(선택)
                         if not outer_self.passthrough_compressed and outer_self.downscale_size is not None:
                             try:
+                                cv2, np = outer_self._get_image_codec_modules()
                                 np_arr = np.frombuffer(payload, np.uint8)
                                 img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
                                 if img is not None:
@@ -227,6 +253,14 @@ class RosCameraThread(ThreadWithStop):
         except Exception as exc:
             print(f"\033[1;97m[ RosCamera ] :\033[0m \033[1;91mERROR\033[0m - Failed to init ROS2: {exc}")
             self._reset_ros_context()
+
+    def _compute_spin_timeout(self) -> float:
+        timeouts = [0.1]
+        if self.min_frame_interval > 0.0:
+            timeouts.append(max(0.02, min(0.1, self.min_frame_interval)))
+        if self.keepalive_sec > 0.0:
+            timeouts.append(max(0.02, min(0.1, self.keepalive_sec)))
+        return min(timeouts)
 
     def _reset_ros_context(self):
         """Clean up ROS2 executor/node/context so we can re-init on next loop."""

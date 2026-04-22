@@ -69,6 +69,30 @@ ODOM_NODE       = "/wheel_v_imu_odom"
 ODOM_GEN_PATH   = Path("/home/team1/cmh/seame_ros/src/localization/src/scripts/odom_generator.py")
 RESULTS_DIR     = Path(__file__).parent.parent / "calibration_results"
 
+
+def _brain_main_is_running() -> bool:
+    """Return True when the brain main process is already active."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", r"python(3)? .*main\.py"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+def _open_serial_port(device: str, baudrate: int = 115200, timeout: float = 0.1):
+    """Open the serial port with POSIX exclusive access when available."""
+    import serial as _serial
+
+    try:
+        return _serial.Serial(device, baudrate, timeout=timeout, exclusive=True)
+    except TypeError:
+        return _serial.Serial(device, baudrate, timeout=timeout)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Direct Serial (NUCLEO bypass — no main.py needed)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -97,7 +121,7 @@ class DirectSerial:
             return
         port = ports[0]
         try:
-            self._ser  = _serial.Serial(port, 115200, timeout=0.1)
+            self._ser  = _open_serial_port(port, 115200, timeout=0.1)
             self._port = port
             print(f"[Serial] 연결: {port}")
             time.sleep(0.3)
@@ -1425,11 +1449,17 @@ def main():
         print("✅  ROS 2 초기화 완료")
 
     # 직접 시리얼 연결 (main.py / AUTO 모드 불필요)
-    _serial = DirectSerial()
-    if _serial.connected:
-        print(f"✅  직접 시리얼 연결: {_serial.port}  (main.py 없이 조향 가능)")
+    force_direct_serial = os.getenv("CALIB_GUI_FORCE_DIRECT_SERIAL", "0") == "1"
+    if _brain_main_is_running() and not force_direct_serial:
+        print("ℹ️  main.py 실행 중이므로 calib_gui는 직접 시리얼 연결을 건너뜁니다.")
+        print("ℹ️  필요하면 CALIB_GUI_FORCE_DIRECT_SERIAL=1 로 강제 실행하세요.")
+        _serial = None
     else:
-        print("⚠  시리얼 연결 실패 — main.py AUTO 모드로 폴백")
+        _serial = DirectSerial()
+        if _serial.connected:
+            print(f"✅  직접 시리얼 연결: {_serial.port}  (main.py 없이 조향 가능)")
+        else:
+            print("⚠  시리얼 연결 실패 — main.py AUTO 모드로 폴백")
 
     threading.Thread(target=_odom_status_loop, daemon=True).start()
 

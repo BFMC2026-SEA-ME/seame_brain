@@ -77,7 +77,9 @@ class threadWrite(ThreadWithStop):
         self.debugger = debugger
 
         self.running = False
+        self._slow_poll_counter = 0
         self.engineEnabled = False
+        self._pending_sensor_config = False
         self._stop_latched = False
         self._stop_sent = False
         self._stop_kl_on_stop = os.getenv("STOP_HARD_KL0", "0").lower() in ("1", "true", "yes", "y")
@@ -126,17 +128,21 @@ class threadWrite(ThreadWithStop):
     def send_to_serial(self, msg):
         command_msg = self.messageConverter.get_command(**msg)
         if command_msg != "error":
+            wrote = False
             try:
                 with self.process.serialLock:
                     serialCon = self.process.serialCon
                     if serialCon and self.process.serialConnected and serialCon.is_open:
                         serialCon.write(command_msg.encode("ascii"))
-                        self.logFile.write(command_msg)
+                        wrote = True
 
             except Exception as e:
                 if self._should_send_error():
                     self.serialConnectionStateSender.send(False)
                     print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;91mERROR\033[0m - Failed to write to serial ({e})")
+                return
+            if wrote:
+                self.logFile.write(command_msg)
 
     def _flush_serial_output(self):
         """Drop any pending bytes in the serial output buffer."""
@@ -257,13 +263,13 @@ class threadWrite(ThreadWithStop):
                     self.engineEnabled = True
                     command = {"action": "kl", "mode": 30}
                     self.send_to_serial(command)
-                    self.load_config("sensors")
+                    self._pending_sensor_config = True
                 elif klRecv == "15":
                     self.running = True
                     self.engineEnabled = False
                     command = {"action": "kl", "mode": 15}
                     self.send_to_serial(command)
-                    self.load_config("sensors")
+                    self._pending_sensor_config = True
                 elif klRecv == "0":
                     self.running = False
                     self.engineEnabled = False
@@ -336,33 +342,44 @@ class threadWrite(ThreadWithStop):
                         }
                         self.send_to_serial(command)
 
-                instantRecv = self.instantSubscriber.receive()
-                if instantRecv is not None: 
-                    if self.debugger:
-                        self.logger.info(instantRecv) 
-                    command = {"action": "instant", "activate": int(instantRecv)}
-                    self.send_to_serial(command)
+                self._slow_poll_counter = (self._slow_poll_counter + 1) % 100
+                _run_slow = self._slow_poll_counter == 0
 
-                batteryRecv = self.batterySubscriber.receive()
-                if batteryRecv is not None: 
-                    if self.debugger:
-                        self.logger.info(batteryRecv)
-                    command = {"action": "battery", "activate": int(batteryRecv)}
-                    self.send_to_serial(command)
+                if _run_slow:
+                    instantRecv = self.instantSubscriber.receive()
+                    if instantRecv is not None: 
+                        if self.debugger:
+                            self.logger.info(instantRecv) 
+                        command = {"action": "instant", "activate": int(instantRecv)}
+                        self.send_to_serial(command)
 
-                resourceMonitorRecv = self.resourceMonitorSubscriber.receive()
-                if resourceMonitorRecv is not None: 
-                    if self.debugger:
-                        self.logger.info(resourceMonitorRecv)
-                    command = {"action": "resourceMonitor", "activate": int(resourceMonitorRecv)}
-                    self.send_to_serial(command)
+                if _run_slow:
+                    batteryRecv = self.batterySubscriber.receive()
+                    if batteryRecv is not None: 
+                        if self.debugger:
+                            self.logger.info(batteryRecv)
+                        command = {"action": "battery", "activate": int(batteryRecv)}
+                        self.send_to_serial(command)
 
-                imuRecv = self.imuSubscriber.receive()
-                if imuRecv is not None: 
-                    if self.debugger:
-                        self.logger.info(imuRecv)
-                    command = {"action": "imu", "activate": int(imuRecv)}
-                    self.send_to_serial(command)
+                if _run_slow:
+                    resourceMonitorRecv = self.resourceMonitorSubscriber.receive()
+                    if resourceMonitorRecv is not None: 
+                        if self.debugger:
+                            self.logger.info(resourceMonitorRecv)
+                        command = {"action": "resourceMonitor", "activate": int(resourceMonitorRecv)}
+                        self.send_to_serial(command)
+
+                if _run_slow:
+                    imuRecv = self.imuSubscriber.receive()
+                    if imuRecv is not None: 
+                        if self.debugger:
+                            self.logger.info(imuRecv)
+                        command = {"action": "imu", "activate": int(imuRecv)}
+                        self.send_to_serial(command)
+
+            if self._pending_sensor_config:
+                self._pending_sensor_config = False
+                threading.Thread(target=self.load_config, args=("sensors",), daemon=True).start()
 
         except Exception as e:
             print(f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;91mERROR\033[0m - {e}")

@@ -40,11 +40,12 @@ import glob
 from queue import Empty
 
 
-from flask import Flask, request
+from flask import Flask, jsonify, request
 from flask_socketio import SocketIO
 from flask_cors import CORS
 from enum import Enum
 
+from src.bridge.processGlobalPlanningBridge import _find_graphml_path, _parse_graphml_nodes
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 from src.templates.workerprocess import WorkerProcess
@@ -64,9 +65,20 @@ def _read(p: str):
     except Exception:
         return None
 
+_thermal_zone_paths = None
+_map_nodes_payload_cache = None
+_map_nodes_payload_graph_path = None
+_map_nodes_payload_graph_mtime_ns = None
+
+def _get_thermal_zone_paths():
+    global _thermal_zone_paths
+    if _thermal_zone_paths is None:
+        _thermal_zone_paths = sorted(glob.glob("/sys/devices/virtual/thermal/thermal_zone*"))
+    return _thermal_zone_paths
+
 def get_jetson_temps_c() -> dict[str, float]:
     temps = {}
-    for z in sorted(glob.glob("/sys/devices/virtual/thermal/thermal_zone*")):
+    for z in _get_thermal_zone_paths():
         name = _read(z + "/type")
         raw  = _read(z + "/temp")
         if not name or not raw:
@@ -85,6 +97,47 @@ def get_jetson_cpu_temp_c() -> float | None:
             or temps.get("soc0-thermal"))
 
 
+def get_dashboard_map_nodes_payload():
+    global _map_nodes_payload_cache
+    global _map_nodes_payload_graph_path
+    global _map_nodes_payload_graph_mtime_ns
+
+    graph_path = _find_graphml_path()
+    if graph_path is None:
+        return {"path": None, "bounds": None, "nodes": []}
+
+    try:
+        mtime_ns = graph_path.stat().st_mtime_ns
+    except Exception:
+        mtime_ns = None
+
+    if (
+        _map_nodes_payload_cache is not None
+        and _map_nodes_payload_graph_path == graph_path
+        and _map_nodes_payload_graph_mtime_ns == mtime_ns
+    ):
+        return _map_nodes_payload_cache
+
+    try:
+        nodes, bounds = _parse_graphml_nodes(graph_path)
+    except Exception as exc:
+        print(
+            f"\033[1;97m[ Dashboard ] :\033[0m "
+            f"\033[1;91mERROR\033[0m - Failed to load map nodes from {graph_path}: {exc}"
+        )
+        return {"path": str(graph_path), "bounds": None, "nodes": []}
+
+    payload = {
+        "path": str(graph_path),
+        "bounds": bounds,
+        "nodes": nodes,
+    }
+    _map_nodes_payload_cache = payload
+    _map_nodes_payload_graph_path = graph_path
+    _map_nodes_payload_graph_mtime_ns = mtime_ns
+    return payload
+
+
 
 class processDashboard(WorkerProcess):
     """This process handles the dashboard interactions, updating the UI based on the system's state.
@@ -101,10 +154,6 @@ class processDashboard(WorkerProcess):
         self.queueList = queueList
         self.logger = logging
         self.debugging = debugging
-        
-        # ip replacement (opt-in to avoid dev-server rebuilds and disconnects)
-        if os.environ.get("DASHBOARD_AUTO_IP") == "1":
-            IpManager.replace_ip_in_file()
 
         # state machine
         self.stateMachine = StateMachine.get_instance()
@@ -133,6 +182,7 @@ class processDashboard(WorkerProcess):
         # session management
         self.sessionActive = False
         self.activeUser = None
+        self.connectedClients = set()
 
         # serial connection state
         self.serialConnected = False
@@ -142,36 +192,32 @@ class processDashboard(WorkerProcess):
         self._latest_semaphores = {}
         self._pending_semaphore_ids = set()
         self._last_semaphore_emit = 0.0
-        self._semaphore_emit_period_s = float(os.getenv("DASHBOARD_SEMAPHORE_EMIT_PERIOD", "0.25"))
+        self._semaphore_emit_period_s = float(os.getenv("DASHBOARD_SEMAPHORE_EMIT_PERIOD", "0.5"))
         self._semaphore_drain_limit = int(os.getenv("DASHBOARD_SEMAPHORE_DRAIN_LIMIT", "64"))
         self._last_camera_emit = 0.0
-        self._camera_emit_period_s = float(os.getenv("DASHBOARD_CAMERA_EMIT_PERIOD", "0.12"))
-        self._camera_loop_period_s = float(os.getenv("DASHBOARD_CAMERA_LOOP_PERIOD", "0.02"))
+        self._camera_emit_period_s = float(os.getenv("DASHBOARD_CAMERA_EMIT_PERIOD", "0.2")) 
+        self._camera_loop_period_s = max(
+            0.02,
+            float(os.getenv("DASHBOARD_CAMERA_LOOP_PERIOD", str(self._camera_emit_period_s))),
+        )
+        self._camera_idle_loop_period_s = max(
+            self._camera_loop_period_s,
+            float(os.getenv("DASHBOARD_CAMERA_IDLE_LOOP_PERIOD", "0.25")),#수정 조심. pipe blocking 문제 생길수도있음
+        )
         self._latest_camera_frame = None
         self._camera_frame_dirty = False
+        self._camera_stream_enabled = False
         self._no_ack_message_names = {"SteerMotor", "SpeedMotor", "Brake", "Control"}
 
         # configuration
         self.table_state_file = self._get_table_state_path()
 
-        # setup flask and socketio
-        self.app = Flask(__name__)
-        self.socketio = SocketIO(
-            self.app,
-            cors_allowed_origins="*",
-            async_mode='eventlet',
-            ping_interval=25,
-            ping_timeout=120,
-        )
-        CORS(self.app, supports_credentials=True)
-
-        # calibration
-        self.calibration = Calibration(self.queueList, self.socketio)
-
-        # initialize message handling
-        self._initialize_messages()
-        self._setup_websocket_handlers()
-        self._start_background_tasks()
+        # Runtime-only objects must be created in the child process.
+        # Creating Flask/SocketIO/greenlets in the parent and then forking
+        # causes unstable websocket behavior under load.
+        self.app = None
+        self.socketio = None
+        self.calibration = None
 
         super(processDashboard, self).__init__(self.queueList, ready_event)
     
@@ -198,15 +244,30 @@ class processDashboard(WorkerProcess):
         self.messagesAndVals.pop("CalibPWMData", None)
         self.messagesAndVals.pop("CalibRunDone", None)
         self.messagesAndVals.pop("GlobalPath", None)
+        self.messagesAndVals.pop("MapNodes", None)
         self.subscribe()
     
 
     def _setup_websocket_handlers(self):
         """Setup WebSocket event handlers."""
+        if self.socketio is None:
+            return
+        self.socketio.on_event('connect', self.handle_connect)
         self.socketio.on_event('message', self.handle_message)
         self.socketio.on_event('save', self.handle_save_table_state)
         self.socketio.on_event('load', self.handle_load_table_state)
         self.socketio.on_event('disconnect', self.handle_disconnect)
+
+    def _setup_http_routes(self):
+        """Setup lightweight HTTP routes for static dashboard data."""
+        if self.app is None:
+            return
+
+        self.app.add_url_rule(
+            "/api/map_nodes",
+            view_func=self.handle_get_map_nodes,
+            methods=["GET"],
+        )
     
     
     def _start_background_tasks(self):
@@ -230,10 +291,36 @@ class processDashboard(WorkerProcess):
     # ===================================== RUN ==========================================
     def run(self):
         """Apply the initializing method."""
-        if self.ready_event:
-            self.ready_event.set()
+        try:
+            # ip replacement (opt-in to avoid dev-server rebuilds and disconnects)
+            if os.environ.get("DASHBOARD_AUTO_IP") == "1":
+                IpManager.replace_ip_in_file()
 
-        self.socketio.run(self.app, host='0.0.0.0', port=5005)
+            self.app = Flask(__name__)
+            self.socketio = SocketIO(
+                self.app,
+                cors_allowed_origins="*",
+                async_mode='eventlet',
+                ping_interval=25,
+                ping_timeout=120,
+            )
+            CORS(self.app, supports_credentials=True)
+            self.calibration = Calibration(self.queueList, self.socketio)
+            self._initialize_messages()
+            self._setup_http_routes()
+            self._setup_websocket_handlers()
+            self._start_background_tasks()
+
+            if self.ready_event:
+                self.ready_event.set()
+
+            self.socketio.run(self.app, host='0.0.0.0', port=5005)
+        except Exception as exc:
+            print(
+                f"\033[1;97m[ Dashboard ] :\033[0m "
+                f"\033[1;91mERROR\033[0m - Dashboard process failed to start: {exc}"
+            )
+            raise
 
 
     def subscribe(self):
@@ -246,7 +333,7 @@ class processDashboard(WorkerProcess):
                 sender = messageHandlerSender(self.queueList, enum["enum"])
                 self.sendMessages[str(name)] = {"obj": sender}
 
-        subscriber = messageHandlerSubscriber(self.queueList, Semaphores, "fifo", True)
+        subscriber = messageHandlerSubscriber(self.queueList, Semaphores, "lastOnly", True)
         self.messages["Semaphores"] = {"obj": subscriber}
 
 
@@ -262,6 +349,13 @@ class processDashboard(WorkerProcess):
         """Send messages to the backend."""
         if dataName in self.sendMessages:
             self.sendMessages[dataName]["obj"].send(dataDict.get("Value"))
+
+    def _sync_camera_stream_state(self):
+        should_stream = bool(self.connectedClients)
+        if should_stream == self._camera_stream_enabled:
+            return
+        self._camera_stream_enabled = should_stream
+        self.send_message_to_brain("CameraStreamState", {"Value": should_stream})
 
 
     def handle_message(self, data):
@@ -307,6 +401,11 @@ class processDashboard(WorkerProcess):
             self.logger.error(f"Failed to parse JSON message: {e}")
             self.socketio.emit('response', {'error': 'Invalid JSON format'}, room=socketId) # type: ignore
 
+    def handle_connect(self):
+        """Track connected clients so camera frames are not broadcast into the void."""
+        self.connectedClients.add(request.sid)
+        self._sync_camera_stream_state()
+
 
     def handle_heartbeat(self):
         """Handle heartbeat message."""
@@ -333,7 +432,8 @@ class processDashboard(WorkerProcess):
 
     def handle_calibration(self, dataDict, socketId):
         """Handle calibration signals from frontend."""
-        self.calibration.handle_calibration_signal(dataDict, socketId)
+        if self.calibration is not None:
+            self.calibration.handle_calibration_signal(dataDict, socketId)
 
 
     def handle_get_current_serial_connection_state(self, socketId):
@@ -383,6 +483,8 @@ class processDashboard(WorkerProcess):
     def handle_disconnect(self):
         """Handle client disconnect to release session ownership."""
         socketId = request.sid
+        self.connectedClients.discard(socketId)
+        self._sync_camera_stream_state()
         if self.sessionActive and self.activeUser == socketId:
             self._trigger_safety_stop("socket disconnect")
             self.sessionActive = False
@@ -423,6 +525,10 @@ class processDashboard(WorkerProcess):
         except OSError as e:
             self.logger.error(f"Failed to load table state: {e}")
             self.socketio.emit('response', {'error': 'Failed to load table state'})
+
+    def handle_get_map_nodes(self):
+        """Serve static map nodes over HTTP so the dashboard does not keep a live pipe."""
+        return jsonify(get_dashboard_map_nodes_payload())
 
 
     def update_hardware_data(self):
@@ -493,6 +599,9 @@ class processDashboard(WorkerProcess):
         try:
             self._drain_camera_queue()
 
+            if not self.connectedClients:
+                return
+
             now = time.monotonic()
             if (
                 self._latest_camera_frame is not None
@@ -500,16 +609,24 @@ class processDashboard(WorkerProcess):
                 and now - self._last_camera_emit >= self._camera_emit_period_s
             ):
                 payload = self._latest_camera_frame
+                emit_kwargs = {}
+                if self.sessionActive and self.activeUser in self.connectedClients:
+                    emit_kwargs["room"] = self.activeUser
+                try:
+                    self.socketio.emit("serialCamera", payload, binary=True, **emit_kwargs)
+                except Exception:
+                    self.socketio.emit("serialCamera", {"value": payload}, **emit_kwargs)
                 self._camera_frame_dirty = False
                 self._last_camera_emit = now
-                try:
-                    self.socketio.emit("serialCamera", payload, binary=True)
-                except Exception:
-                    self.socketio.emit("serialCamera", {"value": payload})
         except Exception as exc:
             self.logger.error(f"send_camera_messages failed: {exc}")
-
-        eventlet.spawn_after(self._camera_loop_period_s, self.send_camera_messages)
+        finally:
+            next_run_s = (
+                self._camera_loop_period_s
+                if self.connectedClients
+                else self._camera_idle_loop_period_s
+            )
+            eventlet.spawn_after(next_run_s, self.send_camera_messages)
 
     def _drain_camera_queue(self):
         """Read the latest camera payload directly from the Image queue."""
