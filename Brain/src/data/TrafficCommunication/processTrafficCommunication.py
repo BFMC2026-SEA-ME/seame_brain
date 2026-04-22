@@ -85,7 +85,7 @@ class threadTrafficDataCollector(ThreadWithStop):
     HISTORY_TOPIC = "/obstacle_roi/event_xy"   # expected type: std_msgs/String ("class_name,x,y")
 
     def __init__(self, shared_memory, queues_list=None, logger=None, debugging=False):
-        super(threadTrafficDataCollector, self).__init__(pause=0.2) # 5Hz, CPU 절감
+        super(threadTrafficDataCollector, self).__init__(pause=0.05) # 20Hz, 10Hz GPS 패킷 손실 방지
         self.shared_memory = shared_memory
         self.queues_list = queues_list
         self.logger = logger
@@ -1270,8 +1270,9 @@ class threadTrafficDataCollector(ThreadWithStop):
     def _publish_gps(self, x, y, rx_time: float | None = None):
         if self._ros_node is None or self._gps_pub is None or PoseWithCovarianceStamped is None:
             return
-        now = time.monotonic()
-        if self._gps_min_publish_period > 0.0 and (now - self._last_gps_publish) < self._gps_min_publish_period:
+        # period 체크는 수신 시각 기준으로 → drain 한 번에 여러 패킷이 쌓여도 모두 publish 가능
+        check_time = rx_time if rx_time is not None else time.time()
+        if self._gps_min_publish_period > 0.0 and (check_time - self._last_gps_publish) < self._gps_min_publish_period:
             return
         msg = PoseWithCovarianceStamped()
         # rx_time이 있으면 TCP 수신 시각을 타임스탬프로 사용, 없으면 현재 ROS 시간
@@ -1291,7 +1292,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         msg.pose.pose.orientation.z = 0.0
         msg.pose.pose.orientation.w = 1.0
         self._gps_pub.publish(msg)
-        self._last_gps_publish = now
+        self._last_gps_publish = check_time
 
     def _log_waiting_pose(self):
         if not self._tcp_enabled:
