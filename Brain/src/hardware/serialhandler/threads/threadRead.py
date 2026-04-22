@@ -624,7 +624,7 @@ class threadRead(ThreadWithStop):
     def _handle_encoder_sample(self, rpm, velocity, distance, stamp=None, publish_ros=None):
         if publish_ros is None:
             publish_ros = self._should_publish_ros_sample()
-        self.currentSpeedSender.send(float(velocity) * float(self._wheel_vel_scale))
+        self.currentSpeedSender.send(float(velocity) * float(self._wheel_vel_scale) * 100.0)
         if publish_ros:
             self._publish_wheel_encoder_and_twist([rpm, velocity, distance], stamp)
 
