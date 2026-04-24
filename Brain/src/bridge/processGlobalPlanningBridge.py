@@ -75,9 +75,9 @@ def _find_graphml_path() -> Optional[Path]:
     ws_src = Path(__file__).resolve().parents[3]
     candidates = [
         # Prefer GraphML stored inside this Brain repo.
-        PROJECT_ROOT / "src" / "map" / "lab" / "lab_track_v1.graphml",
-        ws_src / "map" / "lab" / "lab_track_v1.graphml",
-        ws_src / "perception" / "maps" / "lab_track_v1.graphml",
+        PROJECT_ROOT / "src" / "map" / "bfmc" / "track2.graphml",
+        ws_src / "map" / "bfmc" / "track2.graphml",
+        ws_src / "perception" / "maps" / "track2.graphml",
     ]
 
     # Try ament_index_python if available.
@@ -86,7 +86,7 @@ def _find_graphml_path() -> Optional[Path]:
 
         try:
             share = Path(get_package_share_directory("perception"))
-            candidates.append(share / "maps" / "lab_track_v1.graphml")
+            candidates.append(share / "maps" / "track2.graphml")
         except Exception:
             pass
     except Exception:

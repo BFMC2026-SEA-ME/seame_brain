@@ -30,7 +30,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
   <div class="map-track-container">
     <div #imageContainer id="map-track-image-container">
       <svg #overlayElement id="map-track-overlay" viewBox="28 18 704 546" preserveAspectRatio="xMidYMid meet">
-        <image href="/assets/lab_track.png" x="0" y="0" width="772" height="600" class="map-image" />
+        <image href="/assets/Track.svg" x="0" y="0" width="772" height="600" class="map-image" />
         <rect class="map-frame" x="28.5" y="18.5" width="703" height="545"></rect>
         <g
           *ngIf="currentPoseSvg"
@@ -47,7 +47,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
           ></image>
         </g>
         <ng-container *ngFor="let node of graphNodes">
-          <g *ngIf="isCheckpointNode(node.id)">
+          <!-- <g *ngIf="isCheckpointNode(node.id)">
             <circle
               class="map-node-hit"
               [attr.cx]="node.xSvg"
@@ -64,7 +64,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
               [attr.cy]="node.ySvg"
               r="6"
             ></circle>
-          </g>
+          </g> -->
         </ng-container>
         <ng-container *ngFor="let entry of semaphores | keyvalue">
           <g
