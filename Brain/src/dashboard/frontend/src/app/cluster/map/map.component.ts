@@ -99,8 +99,9 @@ export class MapComponent {
   public currentPoseImageWidth: number = 26;
   public currentPoseImageHeight: number = 26;
   public checkpointNodeIds: Set<string> = new Set([
-    '11', '25', '33', '39', '46', '60', '73', '76',
-    '156', '103', '130', '117', '140', '90', '81', '150'
+    '75','116','127','121','185','71','27','29','31','25','198','42','8','301','93','80',
+    '82','136','125','419','403','399','343','385','362','368','317','318','56','54',
+    '261','239','225','228','288'
   ]);
   public passedCheckpointNodeIds: Set<string> = new Set<string>();
 

@@ -47,7 +47,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
           ></image>
         </g>
         <ng-container *ngFor="let node of graphNodes">
-          <!-- <g *ngIf="isCheckpointNode(node.id)">
+          <g *ngIf="isCheckpointNode(node.id)">
             <circle
               class="map-node-hit"
               [attr.cx]="node.xSvg"
@@ -64,7 +64,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
               [attr.cy]="node.ySvg"
               r="6"
             ></circle>
-          </g> -->
+          </g>
         </ng-container>
         <ng-container *ngFor="let entry of semaphores | keyvalue">
           <g
