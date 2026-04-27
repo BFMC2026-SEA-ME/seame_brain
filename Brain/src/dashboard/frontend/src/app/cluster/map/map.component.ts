@@ -66,7 +66,7 @@ export class MapComponent {
   private readonly mapImageHeight = 514;
   private readonly mapImageBounds = {
     minX: 0,
-    minY: 43,
+    minY: 33,
     maxX: 772,
     maxY: 557
   };
@@ -103,8 +103,8 @@ export class MapComponent {
   public currentPoseImageHeight: number = 26;
   public checkpointNodeIds: Set<string> = new Set([
     '75','116','127','121','185','71','27','29','31','25','198','42','8','301','93','80',
-    '82','136','125','419','403','399','343','385','362','368','317','318','56','54',
-    '261','239','225','228','288'
+    '82','419','403','399','343','385','362','368','317','318','56','54',
+    '261','239','225','228','288','158','171','436','425'
   ]);
   public passedCheckpointNodeIds: Set<string> = new Set<string>();
 
