@@ -70,12 +70,12 @@ export class MapComponent {
     maxX: 732,
     maxY: 557
   };
-  private readonly mapFitPaddingRatio = 0.06;
+  private readonly mapFitPaddingRatio = 0.0;
   // Expand node spacing around map center to better match track geometry.
-  private readonly nodeSpreadScaleX = 1.07;
-  private readonly nodeSpreadScaleY = 1.01;
+  private readonly nodeSpreadScaleX = 1.0;
+  private readonly nodeSpreadScaleY = 1.0;
   // Fine vertical alignment (positive value moves nodes downward).
-  private readonly nodeOffsetSvgY = 20.0;
+  private readonly nodeOffsetSvgY = 0.0;
 
   private screenSize = {"width": 100, "height": 100}; // screen size in %
   private mapSize: number = 50; // map size in % for width
