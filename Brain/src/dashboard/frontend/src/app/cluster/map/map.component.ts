@@ -66,7 +66,7 @@ export class MapComponent {
   private readonly mapImageHeight = 514;
   private readonly mapImageBounds = {
     minX: 0,
-    minY: 28,
+    minY: 30,
     maxX: 772,
     maxY: 557
   };
