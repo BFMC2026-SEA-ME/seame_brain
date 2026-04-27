@@ -65,12 +65,15 @@ export class MapComponent {
   private readonly mapImageWidth = 772;
   private readonly mapImageHeight = 514;
   private readonly mapImageBounds = {
-    minX: 28,
+    minX: 0,
     minY: 43,
-    maxX: 732,
+    maxX: 772,
     maxY: 557
   };
   private readonly mapFitPaddingRatio = 0.0;
+  // Full track physical dimensions in meters (Track.svg: 20696mm × 13786mm).
+  private readonly mapPhysicalWidth = 20.696;
+  private readonly mapPhysicalHeight = 13.786;
   // Expand node spacing around map center to better match track geometry.
   private readonly nodeSpreadScaleX = 1.0;
   private readonly nodeSpreadScaleY = 1.0;
@@ -321,17 +324,9 @@ export class MapComponent {
     const maxY = this.mapImageBounds.maxY - padY;
     const fitSpanX = Math.max(0.0001, maxX - minX);
     const fitSpanY = Math.max(0.0001, maxY - minY);
-    let nx: number;
-    let ny: number;
-    if (!this.graphBounds) {
-      nx = x / 20.67;
-      ny = 1 - (y / 13.76);
-    } else {
-      const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
-      const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
-      nx = (x - this.graphBounds.min_x) / spanX;
-      ny = 1 - ((y - this.graphBounds.min_y) / spanY);
-    }
+    // Use absolute physical dimensions to align nodes with the track image.
+    let nx = x / this.mapPhysicalWidth;
+    let ny = 1 - (y / this.mapPhysicalHeight);
 
     // Apply center-based spread scaling so spacing between nodes increases.
     nx = (nx - 0.5) * this.nodeSpreadScaleX + 0.5;
