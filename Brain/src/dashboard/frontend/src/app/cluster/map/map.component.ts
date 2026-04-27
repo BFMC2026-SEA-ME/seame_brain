@@ -63,12 +63,12 @@ export class MapComponent {
   private mapY: number = 0;
   private enableMapPan: boolean = false;
   private readonly mapImageWidth = 772;
-  private readonly mapImageHeight = 600;
+  private readonly mapImageHeight = 514;
   private readonly mapImageBounds = {
     minX: 28,
-    minY: 61,
+    minY: 43,
     maxX: 732,
-    maxY: 539
+    maxY: 557
   };
   private readonly mapFitPaddingRatio = 0.06;
   // Expand node spacing around map center to better match track geometry.
