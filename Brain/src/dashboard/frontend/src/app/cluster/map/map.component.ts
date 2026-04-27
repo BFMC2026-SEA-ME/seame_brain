@@ -72,8 +72,8 @@ export class MapComponent {
   };
   private readonly mapFitPaddingRatio = 0.0;
   // Full track physical dimensions in meters (Track.svg: 20696mm × 13786mm).
-  private readonly mapPhysicalWidth = 20.496;
-  private readonly mapPhysicalHeight = 14.186;
+  private readonly mapPhysicalWidth = 20.596;
+  private readonly mapPhysicalHeight = 14.286;
   // Expand node spacing around map center to better match track geometry.
   private readonly nodeSpreadScaleX = 1.0;
   private readonly nodeSpreadScaleY = 1.0;
