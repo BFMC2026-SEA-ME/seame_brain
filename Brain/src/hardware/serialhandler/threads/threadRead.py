@@ -159,6 +159,9 @@ class threadRead(ThreadWithStop):
         # 누적거리 오프셋 보정 (필요 시)
         self._wheel_dist_bias = self._read_float_env("WHEEL_DIST_BIAS", 0.0)
 
+        # vy variance: 아커만 차량은 lateral slip 없으므로 vy≈0이 강한 제약.
+        # sigma_vy=0.05 m/s → var=0.0025. vz/vroll/vpitch/vyaw는 크게 유지.
+        self._wheel_vy_var = self._read_float_env("WHEEL_VY_VAR", 0.0025)
         # >>> FIX: unused dimensions' variance (make covariance invertible & "ignored")
         # vy/vz/vroll/vpitch/vyaw variance. 아주 크게 주면 EKF가 사실상 안 믿음.
         self._wheel_other_var = self._read_float_env("WHEEL_OTHER_VAR", 1e3)
@@ -448,8 +451,8 @@ class threadRead(ThreadWithStop):
 
         cov = [0.0] * 36
         # diagonal indices in 6x6 => 0, 7, 14, 21, 28, 35
-        cov[0]  = var_vx     # vx
-        cov[7]  = other_var  # vy
+        cov[0]  = var_vx                        # vx
+        cov[7]  = float(self._wheel_vy_var)    # vy (아커만 vy≈0 제약)
         cov[14] = other_var  # vz
         cov[21] = other_var  # vroll
         cov[28] = other_var  # vpitch
