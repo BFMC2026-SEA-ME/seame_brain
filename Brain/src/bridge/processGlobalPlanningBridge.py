@@ -199,19 +199,24 @@ class GlobalPlanningBridgeNode(Node):
             "y",
         )
         self._allowed_classes = {
-            "ONEWAY",
-            "HIGHWAYENTRANCE",
-            "STOPSIGN",
-            "ROUNDABOUT",
-            "PARK",
-            "CROSSWALK",
-            "NOENTRY",
-            "HIGHWAYEXIT",
-            "PRIORITY",
-            "LIGHTS",
-            "BLOCK",
-            "PEDESTRIAN",
-            "CAR",
+            "ONEWAY", #8
+            "HIGHWAYENTRANCE", #5
+            "STOPSIGN", #1
+            "ROUNDABOUT", #7
+            "PARK", #3
+            "CROSSWALK", #4
+            "NOENTRY",#9
+            "HIGHWAYEXIT", #6
+            "PRIORITY",#2
+            "LIGHTS", #14
+            "BLOCK",#13
+            "CAR", #10
+            "PEDESTRIAN_ON_CROSSWALK", #11
+            "PEDESTRIAN_ON_ROAD" , #12
+            "FOG", #15
+            "TUNNEL",#16
+            "RAMP"#17
+
         }
 
         goal_qos = QoSProfile(
@@ -451,21 +456,29 @@ class GlobalPlanningBridgeNode(Node):
 
         alias_map = {
             "ONEWAY": "ONEWAY",
+            "ONEWAYROAD": "ONEWAY",
             "HIGHWAYENTRANCE": "HIGHWAYENTRANCE",
             "STOPSIGN": "STOPSIGN",
+            "STOP": "STOPSIGN",
             "ROUNDABOUT": "ROUNDABOUT",
             "PARK": "PARK",
             "PARKING": "PARK",
             "CROSSWALK": "CROSSWALK",
             "NOENTRY": "NOENTRY",
+            "DONOTENTER": "NOENTRY",
             "HIGHWAYEXIT": "HIGHWAYEXIT",
             "PRIORITY": "PRIORITY",
             "LIGHTS": "LIGHTS",
             "TRAFFICLIGHT": "LIGHTS",
             "BLOCK": "BLOCK",
             "ROADBLOCK": "BLOCK",
-            "PEDESTRIAN": "PEDESTRIAN",
+            "PEDESTRIANONCROSSWALK": "PEDESTRIAN_ON_CROSSWALK",
+            "PEDESTRIANONROAD": "PEDESTRIAN_ON_ROAD",
             "CAR": "CAR",
+            "STATICCARONPARKING": "CAR",
+            "FOG": "FOG",
+            "TUNNEL": "TUNNEL",
+            "RAMP": "RAMP",
         }
         canonical = alias_map.get(normalized)
         if canonical in self._allowed_classes:

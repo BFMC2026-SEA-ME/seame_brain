@@ -273,6 +273,8 @@ class processDashboard(WorkerProcess):
     def _start_background_tasks(self):
         """Start background monitoring tasks."""
         psutil.cpu_percent(interval=1, percpu=False) # warm up
+        self._net_prev_counters = psutil.net_io_counters()
+        self._net_prev_time = time.monotonic()
 
         eventlet.spawn(self.update_hardware_data)
         eventlet.spawn(self.send_continuous_messages)
@@ -696,6 +698,38 @@ class processDashboard(WorkerProcess):
         self._last_semaphore_emit = now
 
 
+    def _get_network_stats(self):
+        """Return WiFi RSSI (dBm) and network throughput (KB/s rx, tx)."""
+        # WiFi RSSI from /proc/net/wireless
+        rssi = None
+        try:
+            with open("/proc/net/wireless", "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("wlan") or (line and line[0].isalpha() and "wl" in line):
+                        parts = line.split()
+                        if len(parts) >= 4:
+                            rssi = int(float(parts[3].rstrip(".")))
+                            break
+        except Exception:
+            pass
+
+        # Throughput: diff from last call
+        rx_kbps, tx_kbps = 0.0, 0.0
+        try:
+            now = time.monotonic()
+            cur = psutil.net_io_counters()
+            dt = now - self._net_prev_time
+            if dt > 0:
+                rx_kbps = (cur.bytes_recv - self._net_prev_counters.bytes_recv) / dt / 1024
+                tx_kbps = (cur.bytes_sent - self._net_prev_counters.bytes_sent) / dt / 1024
+            self._net_prev_counters = cur
+            self._net_prev_time = now
+        except Exception:
+            pass
+
+        return rssi, round(rx_kbps, 1), round(tx_kbps, 1)
+
     def send_hardware_data_to_frontend(self):
         """Send hardware monitoring data to the frontend."""
         if not self.running:
@@ -706,6 +740,14 @@ class processDashboard(WorkerProcess):
                 'data': {
                     'usage': self.cpuCoreUsage,
                     'temp': self.cpuTemperature
+                }
+            })
+            rssi, rx_kbps, tx_kbps = self._get_network_stats()
+            self.socketio.emit('NetworkStats', {
+                'data': {
+                    'rssi': rssi,
+                    'rx_kbps': rx_kbps,
+                    'tx_kbps': tx_kbps,
                 }
             })
         except Exception as exc:

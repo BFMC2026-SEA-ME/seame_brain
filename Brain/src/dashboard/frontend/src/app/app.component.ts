@@ -87,6 +87,10 @@ export class AppComponent implements OnDestroy {
   private currentSerialConnectionStateSubscription: Subscription | undefined;
   private roadSignSubscription: Subscription | undefined;
   private roadSignHideTimeout: any;
+  private networkStatsSubscription: Subscription | undefined;
+  networkRssi: number | null = null;
+  networkRxKbps: number = 0;
+  networkTxKbps: number = 0;
   private shouldRestoreSession: boolean = false;
   @ViewChild(ClusterComponent) clusterComponent!: ClusterComponent;
   @ViewChild(TableComponent) tableComponent!: TableComponent;
@@ -102,11 +106,17 @@ export class AppComponent implements OnDestroy {
     ROUNDABOUT: 'roundabout',
     PARK: 'parking',
     CROSSWALK: 'crosswalk',
+    NOENTRY: 'forbidden',
     HIGHWAYEXIT: 'highway_exit',
     PRIORITY: 'priority',
-    PEDESTRIAN: 'ped_on_crosswalk',
-    CAR: 'car_ahead',
     LIGHTS: 'traffic_light',
+    BLOCK: 'road_block',
+    CAR: 'car_ahead',
+    PEDESTRIAN_ON_CROSSWALK: 'ped_on_crosswalk',
+    PEDESTRIAN_ON_ROAD: 'ped_on_road',
+    FOG: 'fog',
+    TUNNEL: 'tunnel',
+    RAMP: 'ramp',
   };
 
   constructor(private webSocketService: WebSocketService, private clusterService: ClusterService) { }
@@ -151,6 +161,16 @@ export class AppComponent implements OnDestroy {
       (message) => {
         this.logout();
       }
+    );
+
+    this.networkStatsSubscription = this.webSocketService.receiveNetworkStats().subscribe(
+      (message) => {
+        const d = (message as any)?.data ?? message;
+        this.networkRssi = d?.rssi ?? null;
+        this.networkRxKbps = d?.rx_kbps ?? 0;
+        this.networkTxKbps = d?.tx_kbps ?? 0;
+      },
+      (error) => { console.error('Error receiving network stats:', error); }
     );
 
     this.roadSignSubscription = this.webSocketService.receiveRoadSign().subscribe(
@@ -304,6 +324,9 @@ export class AppComponent implements OnDestroy {
       this.connectionStatusSubscription.unsubscribe();
     }
 
+    if (this.networkStatsSubscription) {
+      this.networkStatsSubscription.unsubscribe();
+    }
     if (this.roadSignSubscription) {
       this.roadSignSubscription.unsubscribe();
     }

@@ -208,6 +208,42 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
   word-break: break-word;
 }
 
+.network-stats-panel {
+  width: clamp(56px, calc(var(--cluster-width, 100vw) * 0.065), 120px);
+  background: #000000;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  padding: clamp(4px, 0.6vw, 8px);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.net-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 4px;
+}
+
+.net-icon {
+  font-size: clamp(9px, 0.8vw, 13px);
+}
+
+.net-label {
+  font-size: clamp(8px, 0.7vw, 11px);
+  color: #aab4c0;
+  flex-shrink: 0;
+}
+
+.net-value {
+  font-size: clamp(8px, 0.7vw, 11px);
+  color: #f3f6fa;
+  text-align: right;
+  white-space: nowrap;
+}
+
 .table { 
   width: 100%;
   height: 100%;

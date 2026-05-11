@@ -68,7 +68,7 @@ class threadWrite(ThreadWithStop):
 
     # ===================================== INIT =========================================
     def __init__(self, process, logFile, queues, logger, debugger = False, example=False):
-        super(threadWrite, self).__init__(pause=0.001)
+        super(threadWrite, self).__init__(pause=0.003)
         self.process = process
         self.queuesList = queues
         self.logFile = logFile
