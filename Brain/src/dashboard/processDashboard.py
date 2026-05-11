@@ -275,7 +275,7 @@ class processDashboard(WorkerProcess):
     def _start_background_tasks(self):
         """Start background monitoring tasks."""
         psutil.cpu_percent(interval=1, percpu=False) # warm up
-        self._net_prev_counters = psutil.net_io_counters()
+        self._net_prev_counters = psutil.net_io_counters(pernic=True).get("wlan0")
         self._net_prev_time = time.monotonic()
 
         eventlet.spawn(self.update_hardware_data)
@@ -715,15 +715,16 @@ class processDashboard(WorkerProcess):
         except Exception:
             pass
 
-        # Throughput: diff from last call
+        # wlan0 throughput only
         rx_kbps, tx_kbps = 0.0, 0.0
         try:
             now = time.monotonic()
-            cur = psutil.net_io_counters()
-            dt = now - self._net_prev_time
-            if dt > 0:
-                rx_kbps = (cur.bytes_recv - self._net_prev_counters.bytes_recv) / dt / 1024
-                tx_kbps = (cur.bytes_sent - self._net_prev_counters.bytes_sent) / dt / 1024
+            cur = psutil.net_io_counters(pernic=True).get("wlan0")
+            if cur is not None and self._net_prev_counters is not None:
+                dt = now - self._net_prev_time
+                if dt > 0:
+                    rx_kbps = (cur.bytes_recv - self._net_prev_counters.bytes_recv) / dt / 1024
+                    tx_kbps = (cur.bytes_sent - self._net_prev_counters.bytes_sent) / dt / 1024
             self._net_prev_counters = cur
             self._net_prev_time = now
         except Exception:
