@@ -35,6 +35,8 @@ import json
 import inspect
 import eventlet
 import os
+import re
+import subprocess
 import time
 import glob
 from queue import Empty
@@ -700,17 +702,16 @@ class processDashboard(WorkerProcess):
 
     def _get_network_stats(self):
         """Return WiFi RSSI (dBm) and network throughput (KB/s rx, tx)."""
-        # WiFi RSSI from /proc/net/wireless
+        # WiFi RSSI via iw
         rssi = None
         try:
-            with open("/proc/net/wireless", "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("wlan") or (line and line[0].isalpha() and "wl" in line):
-                        parts = line.split()
-                        if len(parts) >= 4:
-                            rssi = int(float(parts[3].rstrip(".")))
-                            break
+            result = subprocess.run(
+                ["iw", "dev", "wlan0", "link"],
+                capture_output=True, text=True, timeout=1
+            )
+            match = re.search(r'signal:\s*(-?\d+)', result.stdout)
+            if match:
+                rssi = int(match.group(1))
         except Exception:
             pass
 
