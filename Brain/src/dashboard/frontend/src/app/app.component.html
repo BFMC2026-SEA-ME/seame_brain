@@ -69,8 +69,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
         <div class="road-sign-label" *ngIf="currentRoadSignAsset">{{ currentRoadSignLabel }}</div>
       </div>
       <div class="network-stats-panel">
-        <div class="net-row">
-          <span class="net-icon">&#x1F4F6;</span>
+        <div class="net-wifi-row">
+          <div class="wifi-bars">
+            <div *ngFor="let b of wifiBars" class="wifi-bar"
+              [class.active]="b <= wifiBarCount"
+              [style.height.%]="b * 22">
+            </div>
+          </div>
           <span class="net-value">{{ networkRssi !== null ? networkRssi + ' dBm' : '--' }}</span>
         </div>
         <div class="net-row">

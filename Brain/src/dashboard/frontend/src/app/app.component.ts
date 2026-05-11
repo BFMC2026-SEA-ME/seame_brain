@@ -91,6 +91,15 @@ export class AppComponent implements OnDestroy {
   networkRssi: number | null = null;
   networkRxKbps: number = 0;
   networkTxKbps: number = 0;
+  readonly wifiBars = [1, 2, 3, 4];
+  get wifiBarCount(): number {
+    if (this.networkRssi === null) return 0;
+    if (this.networkRssi >= -55) return 4;
+    if (this.networkRssi >= -65) return 3;
+    if (this.networkRssi >= -75) return 2;
+    if (this.networkRssi >= -85) return 1;
+    return 0;
+  }
   private shouldRestoreSession: boolean = false;
   @ViewChild(ClusterComponent) clusterComponent!: ClusterComponent;
   @ViewChild(TableComponent) tableComponent!: TableComponent;

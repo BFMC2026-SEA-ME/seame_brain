@@ -220,15 +220,35 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
   gap: 3px;
 }
 
+.net-wifi-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.wifi-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: clamp(12px, 1.2vw, 18px);
+}
+
+.wifi-bar {
+  width: clamp(3px, 0.3vw, 5px);
+  background: #3a4a54;
+  border-radius: 1px;
+}
+
+.wifi-bar.active {
+  background: #4fc3f7;
+}
+
 .net-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 4px;
-}
-
-.net-icon {
-  font-size: clamp(9px, 0.8vw, 13px);
 }
 
 .net-label {
