@@ -103,6 +103,12 @@ class threadRead(ThreadWithStop):
         self.last_error_time = None
         self.error_cooldown = timedelta(seconds=3)
 
+        # NUCLEO watchdog: NUCLEO 펌웨어 hang 감지
+        # 데이터가 SERIAL_WATCHDOG_TIMEOUT 초 이상 없으면 disconnect 신호 발생
+        self._last_nucleo_data_time = None
+        self._watchdog_timeout = float(os.getenv("SERIAL_WATCHDOG_TIMEOUT", "5.0"))
+        self._watchdog_fired = False
+
         self._queue_timer = None
         self.queue_sending()
 
@@ -651,12 +657,30 @@ class threadRead(ThreadWithStop):
         self.steeringLimitsSender = messageHandlerSender(self.queuesList, SteeringLimits)
         self.aliveSignalSender = messageHandlerSender(self.queuesList, AliveSignal)
 
+    def reset_watchdog_state(self):
+        """재연결 후 watchdog 초기화 — reconnect 시점부터 새로 5초 카운트."""
+        self._last_nucleo_data_time = time.time()
+        self._watchdog_fired = False
+
     # ====================================== RUN ==========================================
     def thread_work(self):
         try:
             if not self._ros_init_attempted:
                 self._ros_init_attempted = True
                 self._init_ros()
+
+            # NUCLEO watchdog: 마지막 데이터 수신 후 timeout 이상 경과 시 disconnect 처리
+            if (self._last_nucleo_data_time is not None
+                    and not self._watchdog_fired
+                    and time.time() - self._last_nucleo_data_time > self._watchdog_timeout):
+                self._watchdog_fired = True
+                print(
+                    f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m"
+                    f" - NUCLEO watchdog: {self._watchdog_timeout:.0f}s 동안 데이터 없음"
+                    " → NUCLEO 펌웨어 hang 의심, 재연결 시도"
+                )
+                self.serialConnectionStateSender.send(False)
+                return
 
             with self.process.serialLock:
                 serial_con = self.process.serialCon
@@ -667,6 +691,9 @@ class threadRead(ThreadWithStop):
                     try:
                         data = serial_con.read(serial_con.in_waiting).decode("ascii")
                         self.buffer += data
+                        # 데이터 수신 확인 → watchdog 갱신
+                        self._last_nucleo_data_time = time.time()
+                        self._watchdog_fired = False
                     except Exception as e:
                         if self._should_send_error():
                             self.serialConnectionStateSender.send(False)
