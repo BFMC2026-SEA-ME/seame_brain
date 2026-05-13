@@ -327,12 +327,10 @@ class threadRead(ThreadWithStop):
 
             magx = magy = magz = None
             quat = None
-            cov = None
-            if len(parts) >= 32:
+            if len(parts) >= 23:
                 magx = float(parts[16]); magy = float(parts[17]); magz = float(parts[18])
                 qx = float(parts[19]); qy = float(parts[20]); qz = float(parts[21]); qw = float(parts[22])
                 quat = (qx, qy, qz, qw)
-                cov = [float(v) for v in parts[23:32]]
 
             return {
                 "ts_us": ts_us,
@@ -343,7 +341,7 @@ class threadRead(ThreadWithStop):
                 "encoder": (rpm, velocity, distance),
                 "mag": (magx, magy, magz),
                 "quat": quat,
-                "cov": cov,
+                "cov": None,
             }
         except ValueError:
             return None
