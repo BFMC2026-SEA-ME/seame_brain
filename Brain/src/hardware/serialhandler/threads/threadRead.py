@@ -32,6 +32,7 @@ import threading
 import re
 import os
 import math
+import time
 from datetime import datetime, timedelta
 
 from src.templates.threadwithstop import ThreadWithStop
@@ -153,14 +154,19 @@ class threadRead(ThreadWithStop):
 
         # Wheel encoder scaling (velocity/distance). 기본값 1.0 = 보정 없음
         # 예) 실제 1.0m / 측정 0.972m => WHEEL_DIST_SCALE=1.028
-        self._wheel_dist_scale = self._read_float_env("WHEEL_DIST_SCALE", 1.042)
-        self._wheel_vel_scale = self._read_float_env("WHEEL_VEL_SCALE", 1.042)
+        self._wheel_dist_scale = self._read_float_env("WHEEL_DIST_SCALE", 0.981)
+        self._wheel_vel_scale = self._read_float_env("WHEEL_VEL_SCALE", 0.981)
         # 누적거리 오프셋 보정 (필요 시)
         self._wheel_dist_bias = self._read_float_env("WHEEL_DIST_BIAS", 0.0)
 
         # >>> FIX: unused dimensions' variance (make covariance invertible & "ignored")
         # vy/vz/vroll/vpitch/vyaw variance. 아주 크게 주면 EKF가 사실상 안 믿음.
         self._wheel_other_var = self._read_float_env("WHEEL_OTHER_VAR", 1e3)
+        self._last_ros_publish_time = 0.0
+        self._ros_publish_min_interval = float(os.getenv("ROS_PUBLISH_MIN_INTERVAL", "0.02"))
+        # Dashboard speed send rate limit (10Hz)
+        self._last_speed_send_time = 0.0
+        self._speed_send_min_interval = float(os.getenv("SPEED_SEND_MIN_INTERVAL", "0.1"))
 
         # For imuenc time
         self._imuenc_time_base_us = None
@@ -595,21 +601,38 @@ class threadRead(ThreadWithStop):
                 print(f"[SerialHandler] ROS2 wheel_twist publish failed: {exc}")
 
     # ---------------- Message handlers ----------------
+    def _should_publish_ros_sample(self):
+        now = time.monotonic()
+        if now - self._last_ros_publish_time >= self._ros_publish_min_interval:
+            self._last_ros_publish_time = now
+            return True
+        return False
+
     def _handle_imu_sample(self, roll, pitch, yaw, accelx, accely, accelz, gyrox, gyroy, gyroz,
-                           stamp=None, quat=None, orientation_cov=None):
+                           stamp=None, quat=None, orientation_cov=None, publish_ros=None):
         data = {"roll": str(roll), "pitch": str(pitch), "yaw": str(yaw)}
         self.imuDataSender.send(str(data))
-        self._publish_imu(
-            roll, pitch, yaw,
-            accelx, accely, accelz,
-            gyrox, gyroy, gyroz,
-            stamp,
-            quat=quat,
-            orientation_cov=orientation_cov,
-        )
+        if publish_ros is None:
+            publish_ros = self._should_publish_ros_sample()
+        if publish_ros:
+            self._publish_imu(
+                roll, pitch, yaw,
+                accelx, accely, accelz,
+                gyrox, gyroy, gyroz,
+                stamp,
+                quat=quat,
+                orientation_cov=orientation_cov,
+            )
 
-    def _handle_encoder_sample(self, rpm, velocity, distance, stamp=None):
-        self._publish_wheel_encoder_and_twist([rpm, velocity, distance], stamp)
+    def _handle_encoder_sample(self, rpm, velocity, distance, stamp=None, publish_ros=None):
+        if publish_ros is None:
+            publish_ros = self._should_publish_ros_sample()
+        now = time.monotonic()
+        if now - self._last_speed_send_time >= self._speed_send_min_interval:
+            self._last_speed_send_time = now
+            self.currentSpeedSender.send(float(velocity) * float(self._wheel_vel_scale) * 100.0)
+        if publish_ros:
+            self._publish_wheel_encoder_and_twist([rpm, velocity, distance], stamp)
 
     def _init_senders(self):
         self.enableButtonSender = messageHandlerSender(self.queuesList, EnableButton)
@@ -711,6 +734,7 @@ class threadRead(ThreadWithStop):
                     cov = parsed["cov"]
 
                     stamp = self._stamp_from_us(ts_us)
+                    publish_ros = self._should_publish_ros_sample()
 
                     # IMU + Wheel(encoder+twist) share SAME stamp  (요구사항 충족)
                     self._handle_imu_sample(
@@ -720,8 +744,9 @@ class threadRead(ThreadWithStop):
                         stamp,
                         quat=quat,
                         orientation_cov=cov,
+                        publish_ros=publish_ros,
                     )
-                    self._handle_encoder_sample(rpm, velocity, distance, stamp)
+                    self._handle_encoder_sample(rpm, velocity, distance, stamp, publish_ros=publish_ros)
                 elif self.debugger:
                     try:
                         self.logger.warning(f"[SerialHandler] IMUENC parse failed: {value}")
@@ -746,7 +771,7 @@ class threadRead(ThreadWithStop):
 
                     imu_values = self._parse_imu_values(value)
                     if imu_values is not None:
-                        roll, pitch, yaw, gyrox, gyroy, gyroz, accelx, accely, accelz, velx, vely, velz = imu_values
+                        roll, pitch, yaw, gyrox, gyroy, gyroz, accelx, accely, accelz, _, _, _ = imu_values
                         stamp = self._get_ros_now()
                         self._handle_imu_sample(
                             roll, pitch, yaw,
@@ -763,9 +788,8 @@ class threadRead(ThreadWithStop):
                 self.currentSteerSender.send(0.0)
 
             elif action == "speed":
-                speed = value.split(",")[0]
-                if self.is_float(speed):
-                    self.currentSpeedSender.send(float(speed))
+                # Dashboard speed now follows measured wheel encoder velocity.
+                pass
 
             elif action == "steer":
                 steer = value.split(",")[0]

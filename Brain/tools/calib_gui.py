@@ -18,7 +18,9 @@ SEAME Brain — Odometry Calibration GUI (Standalone Web App)
     - 영구 적용 안내 및 odom_generator 재시작
 """
 
+import glob
 import os
+import re
 import sys
 import math
 import time
@@ -30,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 try:
     from odom_calibrator import (
-        Pose2D, analyze_straight, analyze_circle,
+        Pose2D, analyze_straight, analyze_circle, analyze_lap,
         CUR_WHEEL_VEL_SCALE, CUR_WHEEL_DIST_SCALE,
     )
 except ImportError as e:
@@ -64,8 +66,114 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════════════
 PORT            = 5050
 ODOM_NODE       = "/wheel_v_imu_odom"
-ODOM_GEN_PATH   = Path("/home/seame/seame_ros/src/localization/src/scripts/odom_generator.py")
+ODOM_GEN_PATH   = Path("/home/team1/cmh/seame_ros/src/localization/src/scripts/odom_generator.py")
 RESULTS_DIR     = Path(__file__).parent.parent / "calibration_results"
+
+
+def _brain_main_is_running() -> bool:
+    """Return True when the brain main process is already active."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", r"python(3)? .*main\.py"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+def _open_serial_port(device: str, baudrate: int = 115200, timeout: float = 0.1):
+    """Open the serial port with POSIX exclusive access when available."""
+    import serial as _serial
+
+    try:
+        return _serial.Serial(device, baudrate, timeout=timeout, exclusive=True)
+    except TypeError:
+        return _serial.Serial(device, baudrate, timeout=timeout)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Direct Serial (NUCLEO bypass — no main.py needed)
+# ══════════════════════════════════════════════════════════════════════════════
+class DirectSerial:
+    """NUCLEO 직접 시리얼 통신. main.py / AUTO 모드 불필요."""
+
+    SPEED_SCALE = 10.0   # m/s → NUCLEO int  (0.30 m/s → 3)
+    STEER_SCALE = 10.0   # deg → NUCLEO int
+    STEER_LIMIT = 250    # 최대 조향값
+
+    def __init__(self):
+        self._ser   = None
+        self._lock  = threading.Lock()
+        self._port  = None
+        self._connect()
+
+    def _connect(self):
+        try:
+            import serial as _serial
+        except ImportError:
+            print("[Serial] pyserial 미설치 — pip install pyserial")
+            return
+        ports = sorted(glob.glob("/dev/ttyACM*"))
+        if not ports:
+            print("[Serial] /dev/ttyACM* 포트 없음")
+            return
+        port = ports[0]
+        try:
+            self._ser  = _open_serial_port(port, 115200, timeout=0.1)
+            self._port = port
+            print(f"[Serial] 연결: {port}")
+            time.sleep(0.3)
+            self._raw("#kl:30;;\r\n")   # 엔진 활성화
+        except Exception as e:
+            print(f"[Serial] {port} 열기 실패: {e}")
+            self._ser = None
+
+    def _raw(self, cmd: str):
+        if self._ser and self._ser.is_open:
+            self._ser.write(cmd.encode("ascii"))
+
+    def send(self, speed_mps: float, steer_rad: float):
+        """speed_mps: m/s (+전진), steer_rad: rad (+좌회전 ROS 규약)"""
+        with self._lock:
+            if not self.connected:
+                return
+            spd = int(max(-999, min(999, speed_mps * self.SPEED_SCALE)))
+            # ROS +left → NUCLEO +right: 부호 반전
+            steer_deg = math.degrees(-steer_rad)
+            stt = int(max(-self.STEER_LIMIT, min(self.STEER_LIMIT,
+                           steer_deg * self.STEER_SCALE)))
+            self._raw(f"#speed:{spd};;\r\n")
+            self._raw(f"#steer:{stt};;\r\n")
+
+    def stop(self):
+        with self._lock:
+            self._raw("#speed:0;;\r\n")
+            self._raw("#steer:0;;\r\n")
+
+    def close(self):
+        self.stop()
+        time.sleep(0.1)
+        with self._lock:
+            if self._ser:
+                try:
+                    self._raw("#kl:0;;\r\n")
+                    self._ser.close()
+                except Exception:
+                    pass
+            self._ser = None
+
+    @property
+    def connected(self) -> bool:
+        return self._ser is not None and self._ser.is_open
+
+    @property
+    def port(self):
+        return self._port
+
+
+_serial: DirectSerial | None = None  # set in main()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Shared state
@@ -144,11 +252,13 @@ if HAS_ROS:
 @socketio.on("connect")
 def on_connect():
     emit("server_info", {
-        "has_ros":         HAS_ROS,
-        "has_ackermann":   HAS_ACKERMANN,
-        "wheel_vel_scale": CUR_WHEEL_VEL_SCALE,
+        "has_ros":          HAS_ROS,
+        "has_ackermann":    HAS_ACKERMANN,
+        "has_serial":       _serial.connected if _serial else False,
+        "serial_port":      _serial.port if _serial else None,
+        "wheel_vel_scale":  CUR_WHEEL_VEL_SCALE,
         "wheel_dist_scale": CUR_WHEEL_DIST_SCALE,
-        "odom_gen_path":   str(ODOM_GEN_PATH),
+        "odom_gen_path":    str(ODOM_GEN_PATH),
     })
 
 
@@ -164,7 +274,8 @@ def on_start():
 @socketio.on("stop_recording")
 def on_stop(data):
     global _recording
-    test_type = data.get("test_type", "straight")
+    test_type        = data.get("test_type", "straight")
+    known_distance_m = data.get("known_distance_m")  # full_lap 전용
     with _lock:
         _recording = False
         poses = list(_poses)
@@ -177,8 +288,12 @@ def on_stop(data):
         result = analyze_straight(poses)
     elif test_type == "loop_left":
         result = analyze_circle(poses, "left")
-    else:
+    elif test_type == "loop_right":
         result = analyze_circle(poses, "right")
+    elif test_type == "full_lap_left":
+        result = analyze_lap(poses, "left", known_distance_m)
+    else:  # full_lap_right
+        result = analyze_lap(poses, "right", known_distance_m)
 
     result["_poses_xy"] = [[p.x, p.y] for p in poses]
     emit("result", result)
@@ -285,8 +400,12 @@ def on_restart_node():
 
 @socketio.on("drive_cmd")
 def on_drive_cmd(data):
-    if _ros_node is not None and HAS_ACKERMANN:
-        _ros_node.publish_cmd(data.get("speed", 0.0), data.get("steer", 0.0))
+    speed = data.get("speed", 0.0)
+    steer = data.get("steer", 0.0)
+    if _serial is not None and _serial.connected:
+        _serial.send(speed, steer)
+    elif _ros_node is not None and HAS_ACKERMANN:
+        _ros_node.publish_cmd(speed, steer)
 
 
 @socketio.on("save_result")
@@ -621,6 +740,23 @@ HTML = r"""<!DOCTYPE html>
             ↻ 우회전 루프 테스트
             <span class="sub">직사각형 코스 한 바퀴 → yaw 오차로 yaw_scale 계산</span>
           </button>
+          <div class="sec-lbl" style="margin-top:10px;">한 번에 — v_scale + yaw_scale 동시 보정</div>
+          <button class="btn-test" id="btn-full_lap_left" onclick="selectTest('full_lap_left')">
+            🏁 전체 랩 테스트 (좌회전)
+            <span class="sub">트랙 한 바퀴 → yaw + v_scale 동시 계산</span>
+          </button>
+          <button class="btn-test" id="btn-full_lap_right" onclick="selectTest('full_lap_right')">
+            🏁 전체 랩 테스트 (우회전)
+            <span class="sub">트랙 한 바퀴 → yaw + v_scale 동시 계산</span>
+          </button>
+          <div id="lap-dist-row" style="display:none;margin-top:8px;display:none;">
+            <label style="font-size:0.75rem;color:var(--text-sub);">실제 트랙 둘레 (m) — 선택 입력</label>
+            <input id="lap-dist-input" type="number" step="0.1" min="0.5" placeholder="예: 6.0"
+              style="width:100%;margin-top:4px;padding:5px 8px;background:#0d1117;border:1px solid #3a4060;
+                     color:#e2e8f0;border-radius:6px;font-family:var(--font-mono);font-size:0.85rem;">
+            <p style="font-size:0.72rem;color:var(--text-hint);margin:4px 0 0;">
+              입력 시 v_scale도 계산됩니다. 모르면 비워도 됩니다.</p>
+          </div>
         </div>
       </div>
 
@@ -653,7 +789,7 @@ HTML = r"""<!DOCTYPE html>
 
       <!-- Drive pad -->
       <div class="card" id="drive-card" style="display:none">
-        <div class="card-header"><span class="icon">🕹</span>주행 제어</div>
+        <div class="card-header"><span class="icon">🕹</span>주행 제어 &nbsp;<small id="serial-badge" style="font-size:0.7rem;">—</small></div>
         <div class="card-body">
           <div id="drive-pad">
             <div></div>
@@ -663,14 +799,21 @@ HTML = r"""<!DOCTYPE html>
             <button id="key-a" onmousedown="dk('a',1)" onmouseup="dk('a',0)"
               ontouchstart="dk('a',1)" ontouchend="dk('a',0)">◀</button>
             <button id="key-s" onmousedown="dk('s',1)" onmouseup="dk('s',0)"
-              ontouchstart="dk('s',1)" ontouchend="dk('s',0)">■</button>
+              ontouchstart="dk('s',1)" ontouchend="dk('s',0)">▼</button>
             <button id="key-d" onmousedown="dk('d',1)" onmouseup="dk('d',0)"
               ontouchstart="dk('d',1)" ontouchend="dk('d',0)">▶</button>
             <div></div><div></div><div></div>
           </div>
           <p style="font-size:0.75rem; color:var(--text-hint); margin:8px 0 0;">
-            키보드 WASD 또는 위 버튼 / Space 정지
+            W/S 전진·후진 &nbsp; A/D 조향 &nbsp; Space 정지
           </p>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+            <span style="font-size:0.75rem;color:var(--text-sub);">직진 트림</span>
+            <button style="width:32px;height:28px;background:#1e2235;border:1px solid #3a4060;color:#e2e8f0;border-radius:6px;cursor:pointer;font-size:1rem;" onclick="adjustTrim(-1)">−</button>
+            <span id="trim-val" style="font-family:var(--font-mono);font-size:0.85rem;min-width:72px;text-align:center;color:#e2e8f0;">0.000 rad</span>
+            <button style="width:32px;height:28px;background:#1e2235;border:1px solid #3a4060;color:#e2e8f0;border-radius:6px;cursor:pointer;font-size:1rem;" onclick="adjustTrim(+1)">+</button>
+            <button style="height:28px;padding:0 10px;background:#1e2235;border:1px solid #3a4060;color:#94a3b8;border-radius:6px;cursor:pointer;font-size:0.75rem;" onclick="adjustTrim(0)">초기화</button>
+          </div>
         </div>
       </div>
 
@@ -685,7 +828,7 @@ HTML = r"""<!DOCTYPE html>
                   onclick="clearCanvas()">지우기</button>
         </div>
         <div class="card-body p-2">
-          <canvas id="traj-canvas" height="430"></canvas>
+          <canvas id="traj-canvas"></canvas>
         </div>
       </div>
     </div>
@@ -782,7 +925,17 @@ socket.on('connect',    () => badge('연결됨 ✓', 'var(--green)'));
 socket.on('disconnect', () => badge('연결 끊김', 'var(--red)'));
 
 socket.on('server_info', d => {
-  if (d.has_ackermann) document.getElementById('drive-card').style.display = '';
+  if (d.has_ackermann || d.has_serial) document.getElementById('drive-card').style.display = '';
+  const sb = document.getElementById('serial-badge');
+  if (sb) {
+    if (d.has_serial) {
+      sb.textContent = `시리얼 ${d.serial_port} ✓`;
+      sb.style.color = 'var(--green)';
+    } else {
+      sb.textContent = d.has_ackermann ? '시리얼 없음 (ROS 폴백)' : '시리얼 없음';
+      sb.style.color = 'var(--red)';
+    }
+  }
   if (!d.has_ros) log('err', 'ROS 2 미연결 — /odom 데이터 없음');
   log('info', `WHEEL_VEL_SCALE=${d.wheel_vel_scale}  |  WHEEL_DIST_SCALE=${d.wheel_dist_scale}`);
 });
@@ -828,6 +981,8 @@ function selectTest(t) {
   testType = t;
   document.querySelectorAll('.btn-test').forEach(b => b.classList.remove('active'));
   document.getElementById('btn-' + t).classList.add('active');
+  const lapRow = document.getElementById('lap-dist-row');
+  lapRow.style.display = t.startsWith('full_lap') ? '' : 'none';
 }
 function startRec() {
   poses = []; originX = originY = null;
@@ -836,7 +991,15 @@ function startRec() {
   socket.emit('start_recording');
   setRec(true);
 }
-function stopRec()     { socket.emit('stop_recording', {test_type: testType}); setRec(false); }
+function stopRec() {
+  const payload = {test_type: testType};
+  if (testType.startsWith('full_lap')) {
+    const v = parseFloat(document.getElementById('lap-dist-input').value);
+    if (!isNaN(v) && v > 0.5) payload.known_distance_m = v;
+  }
+  socket.emit('stop_recording', payload);
+  setRec(false);
+}
 function resetOrigin() { socket.emit('reset_origin'); setRec(false); }
 function setRec(r) {
   recording = r;
@@ -848,11 +1011,20 @@ function setRec(r) {
 }
 
 // ── Drive pad ─────────────────────────────────────────────────────────────
-// 10 Hz 폴링: 키 누르는 동안 지속적으로 명령 전송 → 응답속도 개선
+const TRIM_STEP = 0.001;  // rad per click (~0.06도)
+let steerTrim = 0.0;
+
+function adjustTrim(dir) {
+  if (dir === 0) { steerTrim = 0.0; }
+  else           { steerTrim = Math.round((steerTrim + dir * TRIM_STEP) * 1000) / 1000; }
+  document.getElementById('trim-val').textContent = (steerTrim >= 0 ? '+' : '') + steerTrim.toFixed(3) + ' rad';
+  sendDrive();  // 전진 중이면 즉시 반영
+}
+
 let _driveInterval = null;
 function _startDriveLoop() {
   if (_driveInterval) return;
-  _driveInterval = setInterval(sendDrive, 100);
+  _driveInterval = setInterval(sendDrive, 30);  // ~33Hz
 }
 function _stopDriveLoop() {
   clearInterval(_driveInterval);
@@ -860,9 +1032,8 @@ function _stopDriveLoop() {
 }
 function sendDrive() {
   const anyKey = Object.values(keys).some(Boolean);
-  const speed  = keys['w'] ? SPEED : 0;
-  // A = 좌회전(+), D = 우회전(-) — Ackermann 부호 규약
-  const steer  = keys['a'] ? STEER : keys['d'] ? -STEER : 0;
+  const speed  = keys['w'] ? SPEED : keys['s'] ? -SPEED : 0;
+  const steer  = (keys['a'] ? STEER : keys['d'] ? -STEER : 0) + steerTrim;
   socket.emit('drive_cmd', {speed, steer});
   if (!anyKey) _stopDriveLoop();
 }
@@ -870,8 +1041,8 @@ function dk(k, down) {
   keys[k] = !!down;
   const b = document.getElementById('key-' + k);
   if (b) b.classList.toggle('pressed', !!down);
-  if (down) { sendDrive(); _startDriveLoop(); }
-  else       { sendDrive(); }  // 즉시 멈춤 명령 전송
+  sendDrive();
+  if (down) _startDriveLoop();
 }
 document.addEventListener('keydown', e => {
   const k = e.key === ' ' ? ' ' : e.key.toLowerCase();
@@ -903,8 +1074,9 @@ function clearCanvas() {
 }
 function drawCanvas() {
   const canvas = document.getElementById('traj-canvas');
-  canvas.width  = canvas.parentElement.clientWidth - 16;
-  canvas.height = 430;
+  const cw = canvas.parentElement.clientWidth - 16;
+  canvas.width  = cw;
+  canvas.height = Math.round(cw * 1.15);  // 세로가 약간 더 긴 비율
   const W = canvas.width, H = canvas.height;
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#090c16'; ctx.fillRect(0,0,W,H);
@@ -986,7 +1158,7 @@ function renderResult(d) {
     h += tr('보정 계수',       fmt(d.correction_factor,6));
     h += `<tr class="divider"><td>현재 v_scale</td><td>${fmt(d.cur_v_scale,6)}</td></tr>`;
     h += tr('→ 권장 v_scale',  fmt(d.sug_v_scale_odom,6), 'val-suggest');
-  } else {  // loop_left / loop_right
+  } else if (d.test_type === 'loop_left' || d.test_type === 'loop_right') {
     const ye = Math.abs(d.yaw_error_deg);
     const yc = ye<3?'val-ok':ye<10?'val-warn':'val-bad';
     h += tr('경로 길이',       fmt(d.odom_path_m,4)+' m');
@@ -998,6 +1170,29 @@ function renderResult(d) {
     h += `<tr class="divider"><td>현재 yaw_scale</td><td>${fmt(d.cur_yaw_scale,6)}</td></tr>`;
     h += tr('보정 계수',       fmt(d.yaw_correction_factor,6));
     h += tr('→ 권장 yaw_scale',fmt(d.sug_yaw_scale,6), 'val-suggest');
+    if (d.diagnosis?.length) {
+      h += `<tr class="divider"><td colspan="2" style="color:var(--text-hint);font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:1px;">진단</td></tr>`;
+      d.diagnosis.forEach(m => {
+        h += `<tr><td colspan="2" style="color:#5eead4;padding-top:2px;">→ ${m}</td></tr>`;
+      });
+    }
+  } else {  // full_lap_left / full_lap_right
+    const ye = Math.abs(d.yaw_error_deg);
+    const yc = ye<3?'val-ok':ye<10?'val-warn':'val-bad';
+    h += tr('경로 길이 (odom)', fmt(d.odom_path_m,4)+' m');
+    if (d.known_distance_m) h += tr('실제 트랙 둘레', fmt(d.known_distance_m,2)+' m');
+    h += tr('위치 폐합 오차',   fmt(d.closure_error_m,4)+' m');
+    h += tr('누적 yaw',         sg(d.total_yaw_deg)+fmt(Math.abs(d.total_yaw_deg),2)+'°');
+    h += tr('예상 yaw',         sg(d.expected_yaw_deg)+fmt(Math.abs(d.expected_yaw_deg),1)+'°');
+    h += tr('yaw 오차',         sg(d.yaw_error_deg)+fmt(Math.abs(d.yaw_error_deg),2)+'°', yc);
+    h += `<tr class="divider"><td>현재 yaw_scale</td><td>${fmt(d.cur_yaw_scale,6)}</td></tr>`;
+    h += tr('보정 계수',        fmt(d.yaw_correction_factor,6));
+    h += tr('→ 권장 yaw_scale', fmt(d.sug_yaw_scale,6), 'val-suggest');
+    if (d.sug_v_scale_odom != null) {
+      h += `<tr class="divider"><td>현재 v_scale</td><td>${fmt(d.cur_v_scale,6)}</td></tr>`;
+      h += tr('보정 계수',       fmt(d.v_correction_factor,6));
+      h += tr('→ 권장 v_scale',  fmt(d.sug_v_scale_odom,6), 'val-suggest');
+    }
     if (d.diagnosis?.length) {
       h += `<tr class="divider"><td colspan="2" style="color:var(--text-hint);font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:1px;">진단</td></tr>`;
       d.diagnosis.forEach(m => {
@@ -1033,24 +1228,45 @@ function renderApply(d) {
     h += cmdBox(`export WHEEL_VEL_SCALE=${fmt(d.sug_wheel_vel_scale,6)}\nexport WHEEL_DIST_SCALE=${fmt(d.sug_wheel_dist_scale,6)}\nros2 param set /wheel_v_imu_odom v_scale 1.0`);
     h += copyBtn(`export WHEEL_VEL_SCALE=${fmt(d.sug_wheel_vel_scale,6)}\nexport WHEEL_DIST_SCALE=${fmt(d.sug_wheel_dist_scale,6)}\nros2 param set /wheel_v_imu_odom v_scale 1.0`);
 
-  } else {  // loop_left / loop_right
+  } else if (d.test_type === 'loop_left' || d.test_type === 'loop_right') {
     const yv = fmt(d.sug_yaw_scale, 6);
     h += `<div class="notice mb-2">Step 2 — yaw_scale 보정입니다.<br>v_scale(직선 테스트) 보정이 완료된 상태에서 적용하세요.</div>`;
     h += secLbl('즉시 적용');
-    h += `<div class="notice mb-2">⚠ odom_generator.py에 yaw_scale 파라미터가 없으면 실패합니다.<br>먼저 아래 "파일 수정"으로 파라미터를 추가하세요.</div>`;
     h += applyRow('yaw_scale', yv, `applyParam('yaw_scale',${d.sug_yaw_scale})`);
     h += cmdBox(`ros2 param set /wheel_v_imu_odom yaw_scale ${yv}`);
-
-    h += `<hr class="sep">` + secLbl('영구 적용 — odom_generator.py에 yaw_scale 추가');
+    h += `<hr class="sep">` + secLbl('영구 적용 — odom_generator.py 수정');
     h += `<div class="d-flex gap-2 mb-2">
       <button class="btn btn-sm flex-fill" style="background:#1c1200;border:1px solid #4a3010;color:#fbbf24;"
-              onclick="patchGen('yaw_scale',${d.sug_yaw_scale})">파라미터 선언 추가</button>
+              onclick="patchGen('yaw_scale',${d.sug_yaw_scale})">파일 수정</button>
       <button class="btn btn-sm flex-fill" style="background:#200c0c;border:1px solid #5a1515;color:#fca5a5;"
               onclick="restartNode()">노드 재시작</button>
     </div>`;
-    h += secLbl('wz에 적용할 코드 (수동 추가 필요)');
-    h += cmdBox(`yaw_scale = float(self.get_parameter("yaw_scale").value)\nwz = float(imu_msg.angular_velocity.z) * yaw_scale`);
-    h += copyBtn(`yaw_scale = float(self.get_parameter("yaw_scale").value)\nwz = float(imu_msg.angular_velocity.z) * yaw_scale`);
+
+  } else {  // full_lap_left / full_lap_right
+    const yv = fmt(d.sug_yaw_scale, 6);
+    h += `<div class="notice mb-2">🏁 전체 랩 — yaw_scale${d.sug_v_scale_odom != null ? ' + v_scale' : ''} 동시 보정</div>`;
+    h += secLbl('yaw_scale 즉시 적용');
+    h += applyRow('yaw_scale', yv, `applyParam('yaw_scale',${d.sug_yaw_scale})`);
+    h += cmdBox(`ros2 param set /wheel_v_imu_odom yaw_scale ${yv}`);
+
+    if (d.sug_v_scale_odom != null) {
+      const vv = fmt(d.sug_v_scale_odom, 6);
+      h += `<hr class="sep">` + secLbl('v_scale 즉시 적용');
+      h += applyRow('v_scale', vv, `applyParam('v_scale',${d.sug_v_scale_odom})`);
+      h += cmdBox(`ros2 param set /wheel_v_imu_odom v_scale ${vv}`);
+    }
+
+    h += `<hr class="sep">` + secLbl('영구 적용 — odom_generator.py 수정');
+    h += `<div class="d-flex gap-2 mb-2">
+      <button class="btn btn-sm flex-fill" style="background:#1c1200;border:1px solid #4a3010;color:#fbbf24;"
+              onclick="patchGen('yaw_scale',${d.sug_yaw_scale})">yaw_scale 파일 수정</button>`;
+    if (d.sug_v_scale_odom != null) {
+      h += `<button class="btn btn-sm flex-fill" style="background:#1c1200;border:1px solid #4a3010;color:#fbbf24;"
+              onclick="patchGen('v_scale',${d.sug_v_scale_odom})">v_scale 파일 수정</button>`;
+    }
+    h += `<button class="btn btn-sm flex-fill" style="background:#200c0c;border:1px solid #5a1515;color:#fca5a5;"
+            onclick="restartNode()">노드 재시작</button>
+    </div>`;
   }
 
   document.getElementById('apply-body').innerHTML = h;
@@ -1159,19 +1375,46 @@ def index():
 # ══════════════════════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════════════════════
+def _detect_ros_domain_id() -> str:
+    """실행 중인 ROS 노드의 DOMAIN_ID를 탐지. 없으면 현재 환경값 사용."""
+    current = os.environ.get("ROS_DOMAIN_ID", "")
+    if current:
+        return current
+    # ps 환경변수에서 탐지
+    try:
+        r = subprocess.run(
+            ["bash", "-c",
+             "cat /proc/$(pgrep -f 'python3 main.py' | head -1)/environ 2>/dev/null"
+             " | tr '\\0' '\\n' | grep ROS_DOMAIN_ID"],
+            capture_output=True, text=True, timeout=3,
+        )
+        for line in r.stdout.splitlines():
+            if "ROS_DOMAIN_ID=" in line:
+                return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return "0"
+
+
 def start_odom_generator():
-    """odom_generator.py를 백그라운드 프로세스로 시작."""
+    """odom_generator.py를 ROS 환경이 설정된 bash로 시작."""
     if not ODOM_GEN_PATH.exists():
         print(f"[경고] odom_generator.py 없음: {ODOM_GEN_PATH}")
         return None
-    env = os.environ.copy()
+
+    domain_id = _detect_ros_domain_id()
+    ros_ws_setup = ODOM_GEN_PATH.parents[4] / "install" / "setup.bash"
+    source_cmd = "source /opt/ros/humble/setup.bash"
+    if ros_ws_setup.exists():
+        source_cmd += f" && source {ros_ws_setup}"
+    cmd = f"export ROS_DOMAIN_ID={domain_id} && {source_cmd} && exec python3 {ODOM_GEN_PATH}"
+
     proc = subprocess.Popen(
-        ["python3", str(ODOM_GEN_PATH)],
-        env=env,
+        ["bash", "-c", cmd],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    print(f"✅  odom_generator 시작 (PID={proc.pid})")
+    print(f"✅  odom_generator 시작 (PID={proc.pid}, DOMAIN_ID={domain_id})")
     return proc
 
 
@@ -1193,7 +1436,7 @@ def _odom_status_loop():
 
 
 def main():
-    global _ros_node
+    global _ros_node, _serial
 
     if not HAS_ROS:
         print("⚠  ROS 2 없이 실행 중 — UI 표시만 가능 (/odom 데이터 없음)")
@@ -1205,6 +1448,19 @@ def main():
         threading.Thread(target=executor.spin, daemon=True).start()
         print("✅  ROS 2 초기화 완료")
 
+    # 직접 시리얼 연결 (main.py / AUTO 모드 불필요)
+    force_direct_serial = os.getenv("CALIB_GUI_FORCE_DIRECT_SERIAL", "0") == "1"
+    if _brain_main_is_running() and not force_direct_serial:
+        print("ℹ️  main.py 실행 중이므로 calib_gui는 직접 시리얼 연결을 건너뜁니다.")
+        print("ℹ️  필요하면 CALIB_GUI_FORCE_DIRECT_SERIAL=1 로 강제 실행하세요.")
+        _serial = None
+    else:
+        _serial = DirectSerial()
+        if _serial.connected:
+            print(f"✅  직접 시리얼 연결: {_serial.port}  (main.py 없이 조향 가능)")
+        else:
+            print("⚠  시리얼 연결 실패 — main.py AUTO 모드로 폴백")
+
     threading.Thread(target=_odom_status_loop, daemon=True).start()
 
     # odom_generator 자동 시작 (이미 실행 중이면 pkill 후 재시작)
@@ -1214,8 +1470,12 @@ def main():
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     print(f"🌐  브라우저에서 열기: http://localhost:{PORT}")
-    socketio.run(app, host="0.0.0.0", port=PORT, debug=False,
-                 allow_unsafe_werkzeug=True)
+    try:
+        socketio.run(app, host="0.0.0.0", port=PORT, debug=False,
+                     allow_unsafe_werkzeug=True)
+    finally:
+        if _serial:
+            _serial.close()
 
 
 if __name__ == "__main__":

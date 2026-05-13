@@ -263,10 +263,10 @@ def analyze_circle(poses: List[Pose2D], direction: str) -> Dict:
     #   odom accumulated yaw_tot should equal exp_yaw (±2π).
     #   correction = exp_yaw / yaw_tot  →  new_yaw_scale = cur × correction
     cur_yaw_scale = _get_current_yaw_scale()
-    if abs(yaw_tot) > 0.1:
+    if abs(yaw_tot) > 0.001:   # > ~0.06° — 사실상 0이 아니면 계산
         yaw_correction = exp_yaw / yaw_tot
     else:
-        yaw_correction = 1.0
+        yaw_correction = 1.0   # yaw 데이터 없음 — 보정 불가
     sug_yaw_scale = cur_yaw_scale * yaw_correction
 
     # Diagnosis
@@ -281,6 +281,11 @@ def analyze_circle(poses: List[Pose2D], direction: str) -> Dict:
             f"yaw 누적 오차 큼 ({yaw_err_deg:+.1f}°) "
             f"→ yaw_scale 보정 필요 (권장값: {sug_yaw_scale:.6f})"
         )
+        if abs(yaw_correction) > 10.0:
+            diag.append(
+                f"⚠ 보정 계수가 매우 큼 ({yaw_correction:.1f}×) "
+                "— IMU angular velocity 단위 또는 yaw_scale 초기값 확인 필요"
+            )
     if closure <= 0.05 and abs(yaw_err_deg) <= 3.0:
         diag.append("원형 폐합 양호 ✅  현재 파라미터 적절")
     if closure <= 0.05 and abs(yaw_err_deg) > 3.0:
@@ -308,6 +313,91 @@ def analyze_circle(poses: List[Pose2D], direction: str) -> Dict:
         sug_yaw_scale         = round(sug_yaw_scale, 6),
         diagnosis             = diag,
     )
+
+def analyze_lap(poses: List[Pose2D], direction: str,
+                known_distance_m: float = None) -> Dict:
+    """
+    전체 트랙 한 바퀴 테스트.
+    - yaw_scale: 누적 yaw vs ±360° 비교
+    - v_scale:   known_distance_m 입력 시 경로 길이 비교로 계산
+    """
+    plen    = path_length(poses)
+    dx, dy, closure = displacement(poses)
+    yaw_tot = total_yaw_change(poses)
+    dur     = poses[-1].t - poses[0].t if len(poses) >= 2 else 0.0
+
+    exp_yaw     = 2 * math.pi if direction == "left" else -2 * math.pi
+    yaw_err_deg = math.degrees(yaw_tot - exp_yaw)
+
+    cur_yaw_scale = _get_current_yaw_scale()
+    if abs(yaw_tot) > 0.001:
+        yaw_correction = exp_yaw / yaw_tot
+    else:
+        yaw_correction = 1.0
+    sug_yaw_scale = cur_yaw_scale * yaw_correction
+
+    cur_v_scale = _get_current_v_scale()
+    if known_distance_m and known_distance_m > 0.1 and plen > 0.1:
+        v_correction = known_distance_m / plen
+        sug_v_scale  = cur_v_scale * v_correction
+        sug_wv       = CUR_WHEEL_VEL_SCALE  * v_correction
+        sug_wd       = CUR_WHEEL_DIST_SCALE * v_correction
+    else:
+        v_correction = None
+        sug_v_scale  = None
+        sug_wv       = None
+        sug_wd       = None
+
+    diag: List[str] = []
+    if closure > 0.10:
+        diag.append(f"위치 폐합 오차 {closure:.3f} m — 거리/yaw 스케일 보정 필요")
+    if abs(yaw_err_deg) > 5.0:
+        diag.append(
+            f"yaw 누적 오차 {yaw_err_deg:+.1f}° → yaw_scale {sug_yaw_scale:.6f} 권장"
+        )
+        if abs(yaw_correction) > 10.0:
+            diag.append(
+                f"⚠ 보정 계수 매우 큼 ({yaw_correction:.1f}×) — IMU angular velocity 확인 필요"
+            )
+    if closure <= 0.05 and abs(yaw_err_deg) <= 3.0:
+        diag.append("폐합 양호 ✅  현재 파라미터 적절")
+    if known_distance_m and v_correction is not None:
+        ep = abs((plen - known_distance_m) / known_distance_m * 100)
+        if ep < 1.0:
+            diag.append(f"거리 오차 {ep:.2f}% — v_scale 양호")
+        elif ep < 5.0:
+            diag.append(f"거리 오차 {ep:.2f}% — v_scale 보정 권장 ({sug_v_scale:.6f})")
+        else:
+            diag.append(f"거리 오차 {ep:.2f}% — v_scale 보정 필요 ({sug_v_scale:.6f})")
+
+    result = dict(
+        test_type             = f"full_lap_{direction}",
+        direction             = direction,
+        odom_path_m           = round(plen,    5),
+        closure_error_m       = round(closure, 5),
+        closure_dx_m          = round(dx,      5),
+        closure_dy_m          = round(dy,      5),
+        total_yaw_deg         = round(math.degrees(yaw_tot), 3),
+        expected_yaw_deg      = round(math.degrees(exp_yaw), 3),
+        yaw_error_deg         = round(yaw_err_deg, 3),
+        duration_s            = round(dur,     3),
+        samples               = len(poses),
+        cur_yaw_scale         = round(cur_yaw_scale, 6),
+        yaw_correction_factor = round(yaw_correction, 6),
+        sug_yaw_scale         = round(sug_yaw_scale, 6),
+        known_distance_m      = known_distance_m,
+        cur_v_scale           = round(cur_v_scale, 6),
+        diagnosis             = diag,
+    )
+    if v_correction is not None:
+        result.update(dict(
+            v_correction_factor  = round(v_correction, 6),
+            sug_v_scale_odom     = round(sug_v_scale,  6),
+            sug_wheel_vel_scale  = round(sug_wv, 6),
+            sug_wheel_dist_scale = round(sug_wd, 6),
+        ))
+    return result
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ROS 2 subscriber node
