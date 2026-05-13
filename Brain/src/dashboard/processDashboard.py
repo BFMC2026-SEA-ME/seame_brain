@@ -622,6 +622,7 @@ class processDashboard(WorkerProcess):
                     self.socketio.emit("serialCamera", {"value": payload}, **emit_kwargs)
                 self._camera_frame_dirty = False
                 self._last_camera_emit = now
+                eventlet.sleep(0)  # emit 후 다른 greenlet에 제어권 양보
         except Exception as exc:
             self.logger.error(f"send_camera_messages failed: {exc}")
         finally:
