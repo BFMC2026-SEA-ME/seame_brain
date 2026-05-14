@@ -265,11 +265,6 @@ class GlobalPlanningBridgeNode(Node):
             depth=1,
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
         )
-        reliable_qos = QoSProfile(
-            history=QoSHistoryPolicy.KEEP_LAST,
-            depth=1,
-            reliability=QoSReliabilityPolicy.RELIABLE,
-        )
         self._goal_pub = self.create_publisher(String, "/global_planning/goal_node_id", goal_qos)
         self._path_sub = None
         if self._enable_path_stream:
@@ -338,22 +333,32 @@ class GlobalPlanningBridgeNode(Node):
             self.get_logger().warning(f"Failed to subscribe {self._obstacle_roi_topic}: {exc}")
 
         self._track_node_ids_sub = None
+        self._track_node_ids_qos = path_qos
         if self._enable_checkpoint_stream:
-            try:
-                if Int32MultiArray is not None:
-                    self._track_node_ids_sub = self.create_subscription(
-                        Int32MultiArray,
-                        "track_path_node_ids",
-                        self._on_track_node_ids,
-                        reliable_qos,
-                    )
-            except Exception as exc:
-                self.get_logger().warning(f"Failed to subscribe track_path_node_ids: {exc}")
+            self.get_logger().info("OrderedCheckpoints stream will start after first /global_pose.")
         else:
             self.get_logger().info(
                 "OrderedCheckpoints stream to dashboard is disabled "
                 "(DASHBOARD_ENABLE_ORDERED_CHECKPOINTS=0)."
             )
+
+    def _ensure_track_node_ids_subscription(self) -> None:
+        if (
+            not self._enable_checkpoint_stream
+            or self._track_node_ids_sub is not None
+            or Int32MultiArray is None
+        ):
+            return
+        try:
+            self._track_node_ids_sub = self.create_subscription(
+                Int32MultiArray,
+                "track_path_node_ids",
+                self._on_track_node_ids,
+                self._track_node_ids_qos,
+            )
+            self.get_logger().info("Subscribed to track_path_node_ids after /global_pose became active.")
+        except Exception as exc:
+            self.get_logger().warning(f"Failed to subscribe track_path_node_ids: {exc}")
 
     def _on_track_node_ids(self, msg) -> None:
         seen: set = set()
@@ -433,6 +438,7 @@ class GlobalPlanningBridgeNode(Node):
         return math.atan2(siny_cosp, cosy_cosp)
 
     def _send_pose(self, x: float, y: float, frame: str, qx: float, qy: float, qz: float, qw: float) -> None:
+        self._ensure_track_node_ids_subscription()
         now = time.time()
         if now - self._last_pose_send < self._pose_send_period:
             return
