@@ -243,7 +243,7 @@ class CameraStreamState(Enum):
     msgType = "bool"
 
 class OrderedCheckpoints(Enum):
-    Queue = "General"
+    Queue = "Dashboard"
     Owner = "GlobalPlanningBridge"
     msgID = 28
     msgType = "list"

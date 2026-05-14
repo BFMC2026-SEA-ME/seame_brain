@@ -64,6 +64,22 @@ from src.utils.messages.messageHandlerSubscriber import (  # type: ignore
 
 
 _GRAPHML_RETRY_SEC = 1.0
+_DEFAULT_CHECKPOINT_NODE_IDS = frozenset(
+    (
+        "75", "116", "127", "121", "185", "71", "27", "29", "31", "25",
+        "198", "42", "8", "301", "93", "80", "82", "419", "403", "399",
+        "343", "385", "362", "368", "317", "318", "56", "54", "261",
+        "239", "225", "228", "288", "158", "171", "436", "425",
+    )
+)
+
+
+def _parse_checkpoint_node_ids(raw: Optional[str]) -> frozenset[str]:
+    if not raw:
+        return _DEFAULT_CHECKPOINT_NODE_IDS
+
+    ids = {part.strip() for part in raw.split(",") if part.strip()}
+    return frozenset(ids) if ids else _DEFAULT_CHECKPOINT_NODE_IDS
 
 
 def _find_graphml_path() -> Optional[Path]:
@@ -191,6 +207,11 @@ class GlobalPlanningBridgeNode(Node):
         self._pose_sender = pose_sender
         self._road_sign_sender = road_sign_sender
         self._checkpoints_sender = checkpoints_sender
+        self._checkpoint_node_ids = _parse_checkpoint_node_ids(os.environ.get("DASHBOARD_CHECKPOINT_NODE_IDS"))
+        self._last_ordered_checkpoints: Tuple[str, ...] = ()
+        self._pending_ordered_checkpoints: Optional[Tuple[str, ...]] = None
+        self._last_checkpoints_send = 0.0
+        self._checkpoints_send_period = float(os.environ.get("ORDERED_CHECKPOINTS_SEND_PERIOD", "0.5"))
         self._last_path_send = 0.0
         self._path_send_period = 0.5  # 2 Hz
         self._last_pose_send = 0.0
@@ -324,10 +345,41 @@ class GlobalPlanningBridgeNode(Node):
         seen: set = set()
         ordered: List[str] = []
         for nid in msg.data:
-            if nid > 0 and nid not in seen:
-                seen.add(nid)
-                ordered.append(str(nid))
-        self._checkpoints_sender.send(ordered)
+            node_id = str(nid)
+            if node_id in self._checkpoint_node_ids and node_id not in seen:
+                seen.add(node_id)
+                ordered.append(node_id)
+
+        ordered_tuple = tuple(ordered)
+        if ordered_tuple == self._last_ordered_checkpoints:
+            self._pending_ordered_checkpoints = None
+            return
+
+        now = time.time()
+        if now - self._last_checkpoints_send >= self._checkpoints_send_period:
+            self._send_ordered_checkpoints(ordered_tuple, now)
+        else:
+            self._pending_ordered_checkpoints = ordered_tuple
+
+    def flush_pending_checkpoints(self) -> None:
+        if self._pending_ordered_checkpoints is None:
+            return
+        if self._pending_ordered_checkpoints == self._last_ordered_checkpoints:
+            self._pending_ordered_checkpoints = None
+            return
+
+        now = time.time()
+        if now - self._last_checkpoints_send < self._checkpoints_send_period:
+            return
+
+        pending = self._pending_ordered_checkpoints
+        self._pending_ordered_checkpoints = None
+        self._send_ordered_checkpoints(pending, now)
+
+    def _send_ordered_checkpoints(self, ordered: Tuple[str, ...], now: float) -> None:
+        self._last_ordered_checkpoints = ordered
+        self._last_checkpoints_send = now
+        self._checkpoints_sender.send(list(ordered))
 
     def publish_goal(self, node_id: str) -> None:
         msg = String()
@@ -568,6 +620,7 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
 
         try:
             self._executor.spin_once(timeout_sec=0.01)
+            self._node.flush_pending_checkpoints()
         except Exception as exc:
             print(f"[GlobalPlanningBridge] spin_once failed: {exc}")
             self._reset_ros()
@@ -668,6 +721,7 @@ if __name__ == "__main__":
 
     queue_list: MutableMapping[str, object] = {
         "General": Queue(),
+        "Dashboard": Queue(maxsize=4),
         "Config": Queue(),
     }
 

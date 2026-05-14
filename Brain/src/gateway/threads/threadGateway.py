@@ -51,6 +51,7 @@ class threadGateway(ThreadWithStop):
         self._critical_batch_limit = 32
         self._warning_batch_limit = 32
         self._general_batch_limit = 128
+        self._dashboard_batch_limit = 4
         self._config_batch_limit = 32
 
     # =================================== SUBSCRIBE ======================================
@@ -220,6 +221,7 @@ class threadGateway(ThreadWithStop):
                         break
                 if latest_image is not None:
                     self.send(latest_image)
+        self._drain_queue("Dashboard", self._dashboard_batch_limit)
         self._process_config_messages(self._config_batch_limit)
 
         # print(time.perf_counter_ns())
