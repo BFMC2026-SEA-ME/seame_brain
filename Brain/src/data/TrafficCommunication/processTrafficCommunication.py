@@ -150,7 +150,9 @@ class threadTrafficDataCollector(ThreadWithStop):
         # TCP socket lock: shared between main thread (send) and RX thread (recv)
         self._sock_lock = threading.Lock()
         # GPS coordinates received from server, passed from RX thread to main thread for ROS publish
+        # items: (x, y, covariance_xy_or_None, rx_time)
         self._gps_rx_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._quality_threshold = int(os.getenv("UWB_SERIAL_QUALITY_THRESHOLD", "30"))
         # RX thread handle
         self._tcp_rx_thread: threading.Thread | None = None
 
@@ -253,6 +255,7 @@ class threadTrafficDataCollector(ThreadWithStop):
 
     def thread_work(self):
         self._ensure_tcp_rx_thread()
+        self._connect_tcp_if_needed()  # ROS 데이터 유무와 무관하게 항상 연결 유지
         self._spin_ros_once()
         self._flush_to_shared_memory()
         self._flush_to_tcp()
@@ -989,7 +992,17 @@ class threadTrafficDataCollector(ThreadWithStop):
 
             gps_xy = self._extract_gps_xy(payload)
             if gps_xy is not None:
-                self._gps_rx_queue.put((gps_xy[0], gps_xy[1], time.time()))
+                if not isinstance(payload, dict) or "quality" not in payload:
+                    continue  # quality 없는 패킷 폐기
+                try:
+                    q = int(payload["quality"])
+                    if q < self._quality_threshold:
+                        continue  # 품질 기준 미달 패킷 폐기
+                    sigma = 0.05 + (1.0 - q / 100.0) * 0.35
+                    covariance_xy = sigma ** 2
+                except Exception:
+                    continue
+                self._gps_rx_queue.put((gps_xy[0], gps_xy[1], covariance_xy, time.time()))
             # 계속 루프 → 버퍼에 남은 프레임 처리
         return rx_buffer  # unreachable, 타입 힌트 만족용
 
@@ -997,10 +1010,10 @@ class threadTrafficDataCollector(ThreadWithStop):
         """메인 스레드: RX 스레드가 쌓아 둔 GPS 좌표를 ROS publish."""
         while not self._gps_rx_queue.empty():
             try:
-                x, y, rx_time = self._gps_rx_queue.get_nowait()
+                x, y, covariance_xy, rx_time = self._gps_rx_queue.get_nowait()
             except queue.Empty:
                 break
-            self._publish_gps(x, y, rx_time)
+            self._publish_gps(x, y, rx_time, covariance_xy)
 
     def _drain_uwb_queue(self):
         """메인 스레드: UWB serial 스레드가 쌓아 둔 좌표를 ROS publish."""
@@ -1266,12 +1279,13 @@ class threadTrafficDataCollector(ThreadWithStop):
             return None
 
         if self._gps_car_id_filter is not None:
-            try:
-                car_id = int(payload.get("id"))
-            except Exception:
-                return None
-            if car_id != self._gps_car_id_filter:
-                return None
+            raw_id = payload.get("id")
+            if raw_id is not None:  # id 필드 없으면 필터 적용 안 함 (우리 차 위치 포맷)
+                try:
+                    if int(raw_id) != self._gps_car_id_filter:
+                        return None
+                except Exception:
+                    return None
 
         try:
             x = float(payload.get("x"))
@@ -1304,9 +1318,17 @@ class threadTrafficDataCollector(ThreadWithStop):
         msg.pose.pose.orientation.y = 0.0
         msg.pose.pose.orientation.z = 0.0
         msg.pose.pose.orientation.w = 1.0
-        if covariance_xy is not None:
-            msg.pose.covariance[0] = float(covariance_xy)
-            msg.pose.covariance[7] = float(covariance_xy)
+        if covariance_xy is None:
+            return  # quality 없는 패킷은 publish 안 함
+        cov = [0.0] * 36
+        var_xy = float(covariance_xy)
+        cov[0]  = var_xy   # x
+        cov[7]  = var_xy   # y
+        cov[14] = 999.0    # z (UWB 미측정)
+        cov[21] = 999.0    # roll (UWB 미측정)
+        cov[28] = 999.0    # pitch (UWB 미측정)
+        cov[35] = 999.0    # yaw (UWB 미측정)
+        msg.pose.covariance = cov
         self._gps_pub.publish(msg)
         self._last_gps_publish = check_time
 
