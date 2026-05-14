@@ -224,6 +224,14 @@ class GlobalPlanningBridgeNode(Node):
             "yes",
             "y",
         )
+        self._enable_checkpoint_stream = str(
+            os.environ.get("DASHBOARD_ENABLE_ORDERED_CHECKPOINTS", "0")
+        ).lower() in (
+            "1",
+            "true",
+            "yes",
+            "y",
+        )
         self._allowed_classes = {
             "ONEWAY", #8
             "HIGHWAYENTRANCE", #5
@@ -330,16 +338,22 @@ class GlobalPlanningBridgeNode(Node):
             self.get_logger().warning(f"Failed to subscribe {self._obstacle_roi_topic}: {exc}")
 
         self._track_node_ids_sub = None
-        try:
-            if Int32MultiArray is not None:
-                self._track_node_ids_sub = self.create_subscription(
-                    Int32MultiArray,
-                    "track_path_node_ids",
-                    self._on_track_node_ids,
-                    transient_qos,
-                )
-        except Exception as exc:
-            self.get_logger().warning(f"Failed to subscribe track_path_node_ids: {exc}")
+        if self._enable_checkpoint_stream:
+            try:
+                if Int32MultiArray is not None:
+                    self._track_node_ids_sub = self.create_subscription(
+                        Int32MultiArray,
+                        "track_path_node_ids",
+                        self._on_track_node_ids,
+                        transient_qos,
+                    )
+            except Exception as exc:
+                self.get_logger().warning(f"Failed to subscribe track_path_node_ids: {exc}")
+        else:
+            self.get_logger().info(
+                "OrderedCheckpoints stream to dashboard is disabled "
+                "(DASHBOARD_ENABLE_ORDERED_CHECKPOINTS=0)."
+            )
 
     def _on_track_node_ids(self, msg) -> None:
         seen: set = set()
