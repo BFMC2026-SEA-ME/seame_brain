@@ -179,6 +179,8 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._gps_frame_id = os.getenv("TRAFFIC_GPS_FRAME_ID", "map")
         self._gps_pub = None
         self._gps_min_publish_period = float(os.getenv("TRAFFIC_GPS_MIN_PUBLISH_PERIOD", "0.1"))
+        # 데이터 지연 측정후 수정하기 . 기본 1초 
+        self._uwb_measurement_delay = float(os.getenv("UWB_MEASUREMENT_DELAY_S", "1.0"))
         self._last_gps_publish = 0.0
         car_id_filter = os.getenv("TRAFFIC_GPS_CAR_ID", "0").strip()
         if car_id_filter in ("", "*"):
@@ -1302,10 +1304,11 @@ class threadTrafficDataCollector(ThreadWithStop):
         if self._gps_min_publish_period > 0.0 and (check_time - self._last_gps_publish) < self._gps_min_publish_period:
             return
         msg = PoseWithCovarianceStamped()
-        # rx_time이 있으면 수신 시각을 타임스탬프로 사용, 없으면 현재 ROS 시간
+        # rx_time이 있으면 UWB 측정 지연을 보정한 시각을 타임스탬프로 사용, 없으면 현재 ROS 시간
         if rx_time is not None:
-            sec = int(rx_time)
-            nanosec = int((rx_time - sec) * 1e9)
+            adjusted_time = rx_time - self._uwb_measurement_delay
+            sec = int(adjusted_time)
+            nanosec = int((adjusted_time - sec) * 1e9)
             msg.header.stamp.sec = sec
             msg.header.stamp.nanosec = nanosec
         else:
