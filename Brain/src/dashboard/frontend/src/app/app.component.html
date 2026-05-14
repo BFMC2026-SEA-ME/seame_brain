@@ -56,17 +56,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
     <div class="team-overlay">
       <!-- add team logo img -->
       <img class="team-logo" src="assets/seame-logo.png" alt="SEA:ME team logo" />
-      <div class="road-sign-panel" [class.active]="!!currentRoadSignAsset">
-        <img
-          class="road-sign-image"
-          *ngIf="currentRoadSignAsset; else emptyRoadSign"
-          [src]="currentRoadSignAsset"
-          [alt]="currentRoadSignLabel || 'road sign'"
-        />
-        <ng-template #emptyRoadSign>
-          <div class="road-sign-empty"></div>
-        </ng-template>
-        <div class="road-sign-label" *ngIf="currentRoadSignAsset">{{ currentRoadSignLabel }}</div>
+      <div class="road-sign-checkpoint-row">
+        <div class="road-sign-panel" [class.active]="!!currentRoadSignAsset">
+          <img
+            class="road-sign-image"
+            *ngIf="currentRoadSignAsset; else emptyRoadSign"
+            [src]="currentRoadSignAsset"
+            [alt]="currentRoadSignLabel || 'road sign'"
+          />
+          <ng-template #emptyRoadSign>
+            <div class="road-sign-empty"></div>
+          </ng-template>
+          <div class="road-sign-label" *ngIf="currentRoadSignAsset">{{ currentRoadSignLabel }}</div>
+        </div>
+        <div class="checkpoint-count-panel">
+          <span class="checkpoint-count-label">CHECKPOINT</span>
+          <span class="checkpoint-count-value">{{ passedCheckpointCount }}<span class="checkpoint-count-total"> / {{ totalCheckpointCount }}</span></span>
+        </div>
       </div>
       <div class="network-stats-panel">
         <div class="net-wifi-row">
@@ -89,7 +95,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
       </div>
     </div>
     <app-cluster class="cluster" [cursorRotation]="cursorRotationSliderValue" [carPosition]="carPositionSliderValue"
-      [carLeftLaneOn]="carLeftLaneOn" [carRightLaneOn]="carRightLaneOn"></app-cluster>
+      [carLeftLaneOn]="carLeftLaneOn" [carRightLaneOn]="carRightLaneOn"
+      (passedCheckpointCountChange)="passedCheckpointCount = $event"></app-cluster>
 
     <!-- Settings gear button overlayed in top-right of cluster (offline unicode icon ⚙) -->
     <button class="settings-gear" (click)="openSettings()" aria-label="Open settings">⚙</button>

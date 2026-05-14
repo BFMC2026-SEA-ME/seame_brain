@@ -107,6 +107,8 @@ export class AppComponent implements OnDestroy {
   currentRoadSignAsset: string | null = null;
   currentRoadSignLabel: string = '';
   currentRoadSignSource: string = '';
+  passedCheckpointCount: number = 0;
+  readonly totalCheckpointCount: number = 37;
   private readonly roadSignDisplayMs = 2500;
   private readonly roadSignClassToAsset: { [key: string]: string } = {
     ONEWAY: 'oneway',

@@ -26,7 +26,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import { Component, Input, ViewChild, ElementRef } from '@angular/core';
+import { Component, Input, Output, EventEmitter, ViewChild, ElementRef } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { WebSocketService} from '../../webSocket/web-socket.service'
 
@@ -55,6 +55,7 @@ interface MapNode {
 })
 export class MapComponent {
   @Input() cursorRotation: number = 0;
+  @Output() passedCheckpointCountChange = new EventEmitter<number>();
 
   @ViewChild('imageContainer') imageContainerRef!: ElementRef<HTMLImageElement>;
   @ViewChild('overlayElement') overlayElementRef!: ElementRef<SVGElement>;
@@ -389,8 +390,12 @@ export class MapComponent {
     }
     const key = String(nodeId);
     if (this.checkpointNodeIds.has(key)) {
+      const before = this.passedCheckpointNodeIds.size;
       this.passedCheckpointNodeIds.add(key);
       this.updateTargetCheckpoint();
+      if (this.passedCheckpointNodeIds.size !== before) {
+        this.passedCheckpointCountChange.emit(this.passedCheckpointNodeIds.size);
+      }
     }
   }
 
