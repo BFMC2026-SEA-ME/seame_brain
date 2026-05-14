@@ -24,7 +24,7 @@ try:
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
-    from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+    from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from std_msgs.msg import String, Int32MultiArray
     from nav_msgs.msg import Path as NavPath
     from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
@@ -32,7 +32,7 @@ except Exception:  # allow running without ROS2 deps
     rclpy = None
     SingleThreadedExecutor = None
     Node = object
-    QoSDurabilityPolicy = None
+
     QoSHistoryPolicy = None
     QoSProfile = None
     QoSReliabilityPolicy = None
@@ -263,13 +263,6 @@ class GlobalPlanningBridgeNode(Node):
             depth=1,
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
         )
-        transient_qos = QoSProfile(
-            history=QoSHistoryPolicy.KEEP_LAST,
-            depth=1,
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
-        )
-
         self._goal_pub = self.create_publisher(String, "/global_planning/goal_node_id", goal_qos)
         self._path_sub = None
         if self._enable_path_stream:
@@ -345,7 +338,7 @@ class GlobalPlanningBridgeNode(Node):
                         Int32MultiArray,
                         "track_path_node_ids",
                         self._on_track_node_ids,
-                        transient_qos,
+                        path_qos,
                     )
             except Exception as exc:
                 self.get_logger().warning(f"Failed to subscribe track_path_node_ids: {exc}")
