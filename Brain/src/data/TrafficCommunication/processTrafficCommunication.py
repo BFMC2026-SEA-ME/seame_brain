@@ -95,6 +95,8 @@ class threadTrafficDataCollector(ThreadWithStop):
         self.latest_pos = None
         self.latest_rot = None
         self.latest_speed = None
+        self._last_pos_for_heading: tuple | None = None
+        self._heading_min_dist_m = float(os.getenv("TRAFFIC_HEADING_MIN_DIST_M", "0.05"))
         # [ADDED][historyData] last parsed event payload as (event_id, x, y)
         self.latest_history = None
         self._history_update_seq = 0
@@ -374,15 +376,18 @@ class threadTrafficDataCollector(ThreadWithStop):
         x = float(msg.pose.position.x)
         y = float(msg.pose.position.y)
         self.latest_pos = (x, y)
-        # Use clockwise-positive yaw in [0, 360) to match external TCP test format.
-        q = msg.pose.orientation
-        q_norm_sq = q.w**2 + q.x**2 + q.y**2 + q.z**2
-        if q_norm_sq < 0.9 or q_norm_sq > 1.1:
-            return
-        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        yaw_deg_ccw = math.degrees(math.atan2(siny_cosp, cosy_cosp))
-        self.latest_rot = (-yaw_deg_ccw) % 360.0
+
+        # UWB 위치 차이로 절대 헤딩 계산: 맵 +x(오른쪽) = 0°, 시계방향 양수
+        if self._last_pos_for_heading is not None:
+            px, py = self._last_pos_for_heading
+            dx = x - px
+            dy = y - py
+            if math.hypot(dx, dy) >= self._heading_min_dist_m:
+                heading_ccw = math.degrees(math.atan2(dy, dx))
+                self.latest_rot = (-heading_ccw) % 360.0
+                self._last_pos_for_heading = (x, y)
+        else:
+            self._last_pos_for_heading = (x, y)
 
         # Optional fallback speed from pose delta when wheel speed topics are missing/stale.
         now = time.monotonic()
