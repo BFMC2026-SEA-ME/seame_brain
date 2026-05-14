@@ -107,12 +107,15 @@ export class MapComponent {
     '261','239','225','228','288','158','171','436','425'
   ]);
   public passedCheckpointNodeIds: Set<string> = new Set<string>();
+  public orderedCheckpoints: string[] = [];
+  public targetCheckpointNodeId: string | null = null;
 
   private graphBounds: { min_x: number; max_x: number; min_y: number; max_y: number } | null = null;
   private currentPoseGraph: { x: number; y: number } | null = null;
 
   private locationSubscription: Subscription | undefined;
   private semaphoresAndCarsSubscription: Subscription | undefined;
+  private orderedCheckpointsSubscription: Subscription | undefined;
   private lastPoseUpdateMs: number = 0;
   private readonly poseUpdatePeriodMs: number = 66;
 
@@ -175,6 +178,16 @@ export class MapComponent {
       },
     );
 
+    this.orderedCheckpointsSubscription = this.webSocketService.receiveOrderedCheckpoints().subscribe(
+      (message) => {
+        const payload = (message as any)?.value ?? message;
+        if (Array.isArray(payload)) {
+          this.orderedCheckpoints = payload.map(String);
+          this.updateTargetCheckpoint();
+        }
+      },
+    );
+
     void this.loadMapNodes();
     this.updateMap()
   }
@@ -185,6 +198,9 @@ export class MapComponent {
     }
     if (this.semaphoresAndCarsSubscription) {
       this.semaphoresAndCarsSubscription.unsubscribe();
+    }
+    if (this.orderedCheckpointsSubscription) {
+      this.orderedCheckpointsSubscription.unsubscribe();
     }
   }
 
@@ -374,6 +390,21 @@ export class MapComponent {
     const key = String(nodeId);
     if (this.checkpointNodeIds.has(key)) {
       this.passedCheckpointNodeIds.add(key);
+      this.updateTargetCheckpoint();
     }
+  }
+
+  private updateTargetCheckpoint(): void {
+    for (const id of this.orderedCheckpoints) {
+      if (this.isCheckpointNode(id) && !this.isPassedCheckpointNode(id)) {
+        this.targetCheckpointNodeId = id;
+        return;
+      }
+    }
+    this.targetCheckpointNodeId = null;
+  }
+
+  public isTargetCheckpointNode(nodeId: string): boolean {
+    return this.targetCheckpointNodeId === String(nodeId);
   }
 }

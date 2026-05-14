@@ -71,6 +71,7 @@ export class WebSocketService {
     'MapNodes',
     'GlobalPose',
     'RoadSign',
+    'OrderedCheckpoints',
     'NetworkStats'
   ]);
 
@@ -287,6 +288,10 @@ export class WebSocketService {
 
   receiveRoadSign(): Observable<any> {
     return this.webSocket.fromEvent('RoadSign');
+  }
+
+  receiveOrderedCheckpoints(): Observable<any> {
+    return this.webSocket.fromEvent('OrderedCheckpoints');
   }
 
   receiveNetworkStats(): Observable<any> {

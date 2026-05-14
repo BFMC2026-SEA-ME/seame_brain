@@ -242,6 +242,12 @@ class CameraStreamState(Enum):
     msgID = 27
     msgType = "bool"
 
+class OrderedCheckpoints(Enum):
+    Queue = "General"
+    Owner = "GlobalPlanningBridge"
+    msgID = 28
+    msgType = "list"
+
 
 ################################# From Nucleo ##################################
 class BatteryLvl(Enum):

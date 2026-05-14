@@ -56,10 +56,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
               r="8"
             ></circle>
             <circle
+              *ngIf="isTargetCheckpointNode(node.id)"
+              class="checkpoint-target-ring"
+              [attr.cx]="node.xSvg"
+              [attr.cy]="node.ySvg"
+              r="10"
+            ></circle>
+            <circle
               class="map-node"
               [class.current]="node.id === currentPoseNodeId"
               [class.checkpoint-pending]="!isPassedCheckpointNode(node.id)"
               [class.checkpoint-passed]="isPassedCheckpointNode(node.id)"
+              [class.checkpoint-target]="isTargetCheckpointNode(node.id)"
               [attr.cx]="node.xSvg"
               [attr.cy]="node.ySvg"
               r="6"

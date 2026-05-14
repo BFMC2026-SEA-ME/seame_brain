@@ -24,18 +24,20 @@ try:
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
-    from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-    from std_msgs.msg import String
+    from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+    from std_msgs.msg import String, Int32MultiArray
     from nav_msgs.msg import Path as NavPath
     from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 except Exception:  # allow running without ROS2 deps
     rclpy = None
     SingleThreadedExecutor = None
     Node = object
+    QoSDurabilityPolicy = None
     QoSHistoryPolicy = None
     QoSProfile = None
     QoSReliabilityPolicy = None
     String = None
+    Int32MultiArray = None
     NavPath = None
     PoseStamped = None
     PoseWithCovarianceStamped = None
@@ -51,6 +53,7 @@ from src.utils.messages.allMessages import (  # type: ignore
     GlobalPath,
     GlobalPose,
     MapNodes,
+    OrderedCheckpoints,
     RoadSign,
     RequestMapNodes,
 )
@@ -180,12 +183,14 @@ class GlobalPlanningBridgeNode(Node):
         path_sender: messageHandlerSender,
         pose_sender: messageHandlerSender,
         road_sign_sender: messageHandlerSender,
+        checkpoints_sender: messageHandlerSender,
     ):
         super().__init__("global_planning_bridge")
         self._queues_list = queues_list
         self._path_sender = path_sender
         self._pose_sender = pose_sender
         self._road_sign_sender = road_sign_sender
+        self._checkpoints_sender = checkpoints_sender
         self._last_path_send = 0.0
         self._path_send_period = 0.5  # 2 Hz
         self._last_pose_send = 0.0
@@ -228,6 +233,12 @@ class GlobalPlanningBridgeNode(Node):
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1,
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
+        )
+        transient_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
         )
 
         self._goal_pub = self.create_publisher(String, "/global_planning/goal_node_id", goal_qos)
@@ -296,6 +307,27 @@ class GlobalPlanningBridgeNode(Node):
             )
         except Exception as exc:
             self.get_logger().warning(f"Failed to subscribe {self._obstacle_roi_topic}: {exc}")
+
+        self._track_node_ids_sub = None
+        try:
+            if Int32MultiArray is not None:
+                self._track_node_ids_sub = self.create_subscription(
+                    Int32MultiArray,
+                    "track_path_node_ids",
+                    self._on_track_node_ids,
+                    transient_qos,
+                )
+        except Exception as exc:
+            self.get_logger().warning(f"Failed to subscribe track_path_node_ids: {exc}")
+
+    def _on_track_node_ids(self, msg) -> None:
+        seen: set = set()
+        ordered: List[str] = []
+        for nid in msg.data:
+            if nid > 0 and nid not in seen:
+                seen.add(nid)
+                ordered.append(str(nid))
+        self._checkpoints_sender.send(ordered)
 
     def publish_goal(self, node_id: str) -> None:
         msg = String()
@@ -503,6 +535,7 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
         self._pose_sender = messageHandlerSender(self._queues_list, GlobalPose, drop_old=True)
         self._map_nodes_sender = messageHandlerSender(self._queues_list, MapNodes, drop_old=True)
         self._road_sign_sender = messageHandlerSender(self._queues_list, RoadSign, drop_old=True)
+        self._checkpoints_sender = messageHandlerSender(self._queues_list, OrderedCheckpoints, drop_old=True)
 
         self._graph_sent = False
         self._last_graph_try = 0.0
@@ -553,7 +586,7 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
                 rclpy.init(args=None)
 
             self._node = GlobalPlanningBridgeNode(
-                self._queues_list, self._path_sender, self._pose_sender, self._road_sign_sender
+                self._queues_list, self._path_sender, self._pose_sender, self._road_sign_sender, self._checkpoints_sender
             )
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
