@@ -356,6 +356,9 @@ class GlobalPlanningBridgeNode(Node):
             )
 
     def _on_track_node_ids(self, msg) -> None:
+        all_ids = [str(nid) for nid in msg.data]
+        print(f"[DEBUG][CheckPoint] track_path_node_ids received: total={len(all_ids)}, sample={all_ids[:10]}")
+
         seen: set = set()
         ordered: List[str] = []
         for nid in msg.data:
@@ -363,6 +366,8 @@ class GlobalPlanningBridgeNode(Node):
             if node_id in self._checkpoint_node_ids and node_id not in seen:
                 seen.add(node_id)
                 ordered.append(node_id)
+
+        print(f"[DEBUG][CheckPoint] matched checkpoints: {ordered}")
 
         ordered_tuple = tuple(ordered)
         if ordered_tuple == self._last_ordered_checkpoints:
@@ -394,6 +399,7 @@ class GlobalPlanningBridgeNode(Node):
         self._last_ordered_checkpoints = ordered
         self._last_checkpoints_send = now
         self._checkpoints_sender.send(list(ordered))
+        print(f"[DEBUG][CheckPoint] sent to dashboard: {list(ordered)}")
 
     def publish_goal(self, node_id: str) -> None:
         msg = String()
