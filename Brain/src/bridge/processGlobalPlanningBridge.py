@@ -213,6 +213,7 @@ class GlobalPlanningBridgeNode(Node):
         self._pending_ordered_checkpoints: Optional[Tuple[str, ...]] = None
         self._last_checkpoints_send = 0.0
         self._checkpoints_send_period = float(os.environ.get("ORDERED_CHECKPOINTS_SEND_PERIOD", "0.5"))
+        self._checkpoints_resend_period = 3.0  # 프론트 연결 전 전송된 경우 대비 주기적 재전송
         self._last_path_send = 0.0
         self._path_send_period = 0.5  # 2 Hz
         self._last_pose_send = 0.0
@@ -356,9 +357,6 @@ class GlobalPlanningBridgeNode(Node):
             )
 
     def _on_track_node_ids(self, msg) -> None:
-        all_ids = [str(nid) for nid in msg.data]
-        print(f"[DEBUG][CheckPoint] track_path_node_ids received: total={len(all_ids)}, sample={all_ids[:10]}")
-
         seen: set = set()
         ordered: List[str] = []
         for nid in msg.data:
@@ -366,8 +364,6 @@ class GlobalPlanningBridgeNode(Node):
             if node_id in self._checkpoint_node_ids and node_id not in seen:
                 seen.add(node_id)
                 ordered.append(node_id)
-
-        print(f"[DEBUG][CheckPoint] matched checkpoints: {ordered}")
 
         ordered_tuple = tuple(ordered)
         if ordered_tuple == self._last_ordered_checkpoints:
@@ -395,11 +391,19 @@ class GlobalPlanningBridgeNode(Node):
         self._pending_ordered_checkpoints = None
         self._send_ordered_checkpoints(pending, now)
 
+    def resend_checkpoints_if_stale(self) -> None:
+        """프론트엔드가 나중에 연결된 경우를 대비해 마지막 체크포인트를 주기적으로 재전송."""
+        if not self._last_ordered_checkpoints:
+            return
+        now = time.time()
+        if now - self._last_checkpoints_send >= self._checkpoints_resend_period:
+            self._checkpoints_sender.send(list(self._last_ordered_checkpoints))
+            self._last_checkpoints_send = now
+
     def _send_ordered_checkpoints(self, ordered: Tuple[str, ...], now: float) -> None:
         self._last_ordered_checkpoints = ordered
         self._last_checkpoints_send = now
         self._checkpoints_sender.send(list(ordered))
-        print(f"[DEBUG][CheckPoint] sent to dashboard: {list(ordered)}")
 
     def publish_goal(self, node_id: str) -> None:
         msg = String()
@@ -641,6 +645,7 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
         try:
             self._executor.spin_once(timeout_sec=0.01)
             self._node.flush_pending_checkpoints()
+            self._node.resend_checkpoints_if_stale()
         except Exception as exc:
             print(f"[GlobalPlanningBridge] spin_once failed: {exc}")
             self._reset_ros()
