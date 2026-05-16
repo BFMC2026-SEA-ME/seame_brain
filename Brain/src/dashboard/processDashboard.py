@@ -53,6 +53,7 @@ from src.utils.messages.messageHandlerSender import messageHandlerSender
 from src.templates.workerprocess import WorkerProcess
 from src.utils.messages.allMessages import Semaphores
 from src.statemachine.stateMachine import StateMachine
+from src.statemachine.systemMode import SystemMode
 from src.dashboard.components.calibration import Calibration
 from src.dashboard.components.ip_manger import IpManager
 
@@ -444,6 +445,11 @@ class processDashboard(WorkerProcess):
         """Handle getting the current serial connection state."""
         self.socketio.emit('current_serial_connection_state', {'data': self.serialConnected}, room=socketId)
 
+    def _should_safety_stop_on_dashboard_loss(self) -> bool:
+        """AUTO 모드에서는 대시보드 연결 손실로 차량을 멈추지 않음.
+        AckermannBridge → Nucleo 경로는 로컬이므로 네트워크와 무관."""
+        return self.stateMachine.get_mode() != SystemMode.AUTO
+
     def _trigger_safety_stop(self, reason: str = "disconnect"):
         """Force a safe stop on the vehicle when control link is lost."""
         try:
@@ -490,7 +496,13 @@ class processDashboard(WorkerProcess):
         self.connectedClients.discard(socketId)
         self._sync_camera_stream_state()
         if self.sessionActive and self.activeUser == socketId:
-            self._trigger_safety_stop("socket disconnect")
+            if self._should_safety_stop_on_dashboard_loss():
+                self._trigger_safety_stop("socket disconnect")
+            else:
+                print(
+                    f"\033[1;97m[ Dashboard ] :\033[0m "
+                    f"\033[1;92mINFO\033[0m - Socket disconnected in AUTO mode, skipping safety stop"
+                )
             self.sessionActive = False
             self.activeUser = None
 
@@ -559,7 +571,13 @@ class processDashboard(WorkerProcess):
                     self.socketio.emit('heartbeat', {'data': 'Heartbeat'})
                 else:
                     print(f"\033[1;97m[ Dashboard ] :\033[0m \033[1;93mWARNING\033[0m - Connection lost with peer \033[94m{self.activeUser}\033[0m")
-                    self._trigger_safety_stop("heartbeat timeout")
+                    if self._should_safety_stop_on_dashboard_loss():
+                        self._trigger_safety_stop("heartbeat timeout")
+                    else:
+                        print(
+                            f"\033[1;97m[ Dashboard ] :\033[0m "
+                            f"\033[1;92mINFO\033[0m - Heartbeat timeout in AUTO mode, skipping safety stop"
+                        )
                     self.socketio.emit('heartbeat_disconnect', {'data': 'Heartbeat timeout'})
                     self.sessionActive = False
                     self.activeUser = None
