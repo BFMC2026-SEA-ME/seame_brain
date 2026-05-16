@@ -190,7 +190,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         # 데이터 지연 측정후 수정하기 . 기본 1초 
         self._uwb_measurement_delay = float(os.getenv("UWB_MEASUREMENT_DELAY_S", "1.0"))
         self._last_gps_publish = 0.0
-        car_id_filter = os.getenv("TRAFFIC_GPS_CAR_ID", "0").strip()
+        car_id_filter = os.getenv("TRAFFIC_GPS_CAR_ID", "0").strip() #차량 번호 ? 
         if car_id_filter in ("", "*"):
             self._gps_car_id_filter = None
         else:
@@ -1138,6 +1138,15 @@ class threadTrafficDataCollector(ThreadWithStop):
                     break
             if x is None or y is None:
                 continue
+            # TRAFFIC_GPS_CAR_ID 필터 적용
+            if self._gps_car_id_filter is not None:
+                raw_id = payload.get("id")
+                if raw_id is not None:
+                    try:
+                        if int(raw_id) != self._gps_car_id_filter:
+                            continue
+                    except (TypeError, ValueError):
+                        continue
             covariance_xy = None
             raw_quality = payload.get("quality")
             if raw_quality is not None:
