@@ -621,6 +621,13 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
         self._graph_sent = False
         self._last_graph_try = 0.0
         self._graph_path: Optional[Path] = None
+        self._init_failed_permanently = False
+
+    def run(self) -> None:
+        try:
+            super().run()
+        finally:
+            self._shutdown_ros()
 
     def thread_work(self) -> None:
         # Handle GraphML loading (non-ROS).
@@ -630,8 +637,7 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
             self._maybe_send_graph_nodes(force=True)
 
         # Initialize ROS if needed.
-        if rclpy is None:
-            time.sleep(0.1)
+        if rclpy is None or self._init_failed_permanently:
             return
 
         if self._node is None or self._executor is None:
@@ -652,16 +658,21 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
             self._node.flush_pending_checkpoints()
             self._node.resend_checkpoints_if_stale()
         except Exception as exc:
+            if self._blocker.is_set():
+                return
             print(f"[GlobalPlanningBridge] spin_once failed: {exc}")
-            self._reset_ros()
+            self._destroy_node_only()
             time.sleep(0.1)
 
     def stop(self) -> None:
-        self._reset_ros()
+        # 플래그만 세팅. 실제 ROS 정리는 run()의 finally에서 스레드 자신이 수행.
+        self._init_failed_permanently = True
         super().stop()
 
     def _maybe_init_ros(self) -> None:
         if self._node is not None:
+            return
+        if self._blocker.is_set():
             return
 
         try:
@@ -675,9 +686,12 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
             self._executor.add_node(self._node)
         except Exception as exc:
             print(f"[GlobalPlanningBridge] init failed: {exc}")
-            self._reset_ros()
+            self._node = None
+            self._executor = None
+            self._init_failed_permanently = True
 
-    def _reset_ros(self) -> None:
+    def _destroy_node_only(self) -> None:
+        # node/executor만 정리. rclpy context는 유지하여 재초기화 가능.
         if self._executor and self._node:
             try:
                 self._executor.remove_node(self._node)
@@ -692,14 +706,17 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
                 self._node.destroy_node()
             except Exception:
                 pass
+        self._executor = None
+        self._node = None
+
+    def _shutdown_ros(self) -> None:
+        # 완전 종료: node + rclpy context 모두 정리.
+        self._destroy_node_only()
         if rclpy is not None and rclpy.ok():
             try:
                 rclpy.shutdown()
             except Exception:
                 pass
-
-        self._executor = None
-        self._node = None
 
     def _maybe_send_graph_nodes(self, force: bool = False) -> None:
         if self._graph_sent and not force:

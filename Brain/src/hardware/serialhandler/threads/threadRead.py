@@ -188,6 +188,9 @@ class threadRead(ThreadWithStop):
         if self._ros_shutdown_requested:
             return False
         if self._ros_node is not None and self._imu_pub is not None:
+            if rclpy is not None and not rclpy.ok():
+                self._ros_shutdown_requested = True
+                return False
             return True
 
         if rclpy is None or Imu is None:
@@ -282,6 +285,7 @@ class threadRead(ThreadWithStop):
             return ros_now
 
     def _shutdown_ros(self):
+        self._ros_shutdown_requested = True
         if self._ros_node is None:
             return
         try:
@@ -543,11 +547,12 @@ class threadRead(ThreadWithStop):
         )
 
         try:
-            if self._ros_shutdown_requested:
+            if self._ros_shutdown_requested or not rclpy.ok():
                 return
             self._imu_pub.publish(msg)
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU publish failed: {exc}")
+            self._ros_shutdown_requested = True
 
     def _publish_wheel_encoder_and_twist(self, values, stamp=None):
         """
@@ -574,11 +579,12 @@ class threadRead(ThreadWithStop):
             msg.vector.y = float(velocity)
             msg.vector.z = float(distance)
             try:
-                if self._ros_shutdown_requested:
+                if self._ros_shutdown_requested or not rclpy.ok():
                     return
                 self._wheel_pub.publish(msg)
             except Exception as exc:
                 print(f"[SerialHandler] ROS2 wheel_encoder publish failed: {exc}")
+                self._ros_shutdown_requested = True
 
         # 2) NEW /wheel_twist
         if self._wheel_twist_pub is not None and TwistWithCovarianceStamped is not None:
@@ -600,11 +606,12 @@ class threadRead(ThreadWithStop):
             tmsg.twist.covariance = self._wheel_twist_cov36()
 
             try:
-                if self._ros_shutdown_requested:
+                if self._ros_shutdown_requested or not rclpy.ok():
                     return
                 self._wheel_twist_pub.publish(tmsg)
             except Exception as exc:
                 print(f"[SerialHandler] ROS2 wheel_twist publish failed: {exc}")
+                self._ros_shutdown_requested = True
 
     # ---------------- Message handlers ----------------
     def _should_publish_ros_sample(self):
