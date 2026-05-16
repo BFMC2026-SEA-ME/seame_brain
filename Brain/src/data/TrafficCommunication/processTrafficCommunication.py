@@ -174,7 +174,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         
         self._tcp_port = int(os.getenv("TRAFFIC_TCP_PORT", "5000"))
         self._tcp_bind_ip = os.getenv("TRAFFIC_TCP_BIND_IP", "").strip()
-        self._tcp_timeout = float(os.getenv("TRAFFIC_TCP_CONNECT_TIMEOUT", "3.0"))
+        self._tcp_timeout = float(os.getenv("TRAFFIC_TCP_CONNECT_TIMEOUT", "0.5"))
         self._tcp_send_speed = os.getenv("TRAFFIC_TCP_SEND_SPEED", "1").lower() in ("1", "true", "yes", "y")
         self._sock = None
         self._tcp_rx_buffer = ""
@@ -218,13 +218,13 @@ class threadTrafficDataCollector(ThreadWithStop):
                 self._semaphore_subscriber = None
             try:
                 self._cars_subscriber = messageHandlerSubscriber(
-                    self.queues_list, Cars, "fifo", True
+                    self.queues_list, Cars, "lastOnly", True
                 )
             except Exception:
                 self._cars_subscriber = None
             try:
                 self._location_subscriber = messageHandlerSubscriber(
-                    self.queues_list, Location, "fifo", True
+                    self.queues_list, Location, "lastOnly", True
                 )
             except Exception:
                 self._location_subscriber = None

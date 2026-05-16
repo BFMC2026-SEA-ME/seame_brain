@@ -125,7 +125,6 @@ class threadGateway(ThreadWithStop):
             for element, pipe in self.sendingList[Owner][Id].items():
                 # We send a dictionary that contain the type of the message and message
                 try:
-                    # sub이 수신안하면 막힐수도있다.(버퍼가 꽉차서)
                     pipe.send({"Type": Type, "value": Value, "id": Id, "Owner": Owner})
                     if self.debugging:
                         self.logger.warning(message)
