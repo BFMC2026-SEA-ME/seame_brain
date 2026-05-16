@@ -86,9 +86,10 @@ class threadTrafficDataCollector(ThreadWithStop):
     SPEED_TWIST_TOPIC = "/wheel_twist"     # expected type: geometry_msgs/TwistWithCovarianceStamped (linear.x in m/s)
     HISTORY_TOPIC = "/obstacle_roi/event_xy"   # expected type: std_msgs/String ("class_name,x,y")
 
-    def __init__(self, shared_memory, queues_list=None, logger=None, debugging=False, uwb_queue=None):
+    def __init__(self, shared_memory, queues_list=None, logger=None, debugging=False, uwb_queue=None, device_id=None):
         super(threadTrafficDataCollector, self).__init__(pause=0.05) # 20Hz, 10Hz GPS 패킷 손실 방지
         self._uwb_queue = uwb_queue  # threadUWBSerial이 넣어주는 (x, y, quality, rx_time) 큐
+        self._device_id = device_id
         self.shared_memory = shared_memory
         self.queues_list = queues_list
         self.logger = logger
@@ -190,14 +191,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         # 데이터 지연 측정후 수정하기 . 기본 1초 
         self._uwb_measurement_delay = float(os.getenv("UWB_MEASUREMENT_DELAY_S", "1.0"))
         self._last_gps_publish = 0.0
-        car_id_filter = os.getenv("TRAFFIC_GPS_CAR_ID", "0").strip() #차량 번호 ? 
-        if car_id_filter in ("", "*"):
-            self._gps_car_id_filter = None
-        else:
-            try:
-                self._gps_car_id_filter = int(car_id_filter)
-            except ValueError:
-                self._gps_car_id_filter = None
+        self._gps_car_id_filter = self._device_id
         # UDP direct listen is optional; prefer queue feed from processSemaphores to avoid port conflicts.
         self._udp_enabled = os.getenv("TRAFFIC_UDP_SEMAPHORE_ENABLE", "0").lower() in ("1", "true", "yes", "y")
         self._udp_port = int(os.getenv("TRAFFIC_UDP_SEMAPHORE_PORT", "5007"))
@@ -1606,7 +1600,7 @@ class processTrafficCommunication(WorkerProcess):
 
         TrafficDataCollectorTh = threadTrafficDataCollector(
             self.shared_memory, self.queuesList, self.logging, self.debugging,
-            uwb_queue=uwb_queue,
+            uwb_queue=uwb_queue, device_id=self.deviceID,
         )
         self.threads.append(TrafficDataCollectorTh)
 
