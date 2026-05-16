@@ -103,6 +103,11 @@ class threadRead(ThreadWithStop):
         self.last_error_time = None
         self.error_cooldown = timedelta(seconds=3)
 
+        # NUCLEO watchdog
+        self._watchdog_timeout = float(os.getenv("SERIAL_WATCHDOG_TIMEOUT", "5.0"))
+        self._last_nucleo_data_time = None
+        self._watchdog_fired = False
+
         self._queue_timer = None
         self.queue_sending()
 
