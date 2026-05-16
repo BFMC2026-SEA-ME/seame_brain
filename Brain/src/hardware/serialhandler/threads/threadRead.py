@@ -668,19 +668,6 @@ class threadRead(ThreadWithStop):
                 self._ros_init_attempted = True
                 self._init_ros()
 
-            # NUCLEO watchdog: 마지막 데이터 수신 후 timeout 이상 경과 시 disconnect 처리
-            if (self._last_nucleo_data_time is not None
-                    and not self._watchdog_fired
-                    and time.time() - self._last_nucleo_data_time > self._watchdog_timeout):
-                self._watchdog_fired = True
-                print(
-                    f"\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m"
-                    f" - NUCLEO watchdog: {self._watchdog_timeout:.0f}s 동안 데이터 없음"
-                    " → NUCLEO 펌웨어 hang 의심, 재연결 시도"
-                )
-                self.serialConnectionStateSender.send(False)
-                return
-
             with self.process.serialLock:
                 serial_con = self.process.serialCon
                 if serial_con is None or not self.process.serialConnected or not serial_con.is_open:
