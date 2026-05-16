@@ -44,11 +44,13 @@ from src.data.TrafficCommunication.useful.sharedMem import sharedMem
 from src.templates.workerprocess import WorkerProcess
 from src.templates.threadwithstop import ThreadWithStop
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
-from src.utils.messages.allMessages import Cars, Semaphores
+from src.utils.messages.allMessages import Cars, Location, Semaphores
 try:
     from src.data.TrafficCommunication.threads.threadTrafficCommunication import threadTrafficCommunication
 except Exception:
     threadTrafficCommunication = None
+
+TRAFFIC_LEGACY_ENABLE_DEFAULT = "1"
 
 try:
     import rclpy
@@ -159,7 +161,11 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._tcp_rx_thread: threading.Thread | None = None
 
         # direct TCP sender (based on proven test script)
-        self._tcp_enabled = os.getenv("TRAFFIC_SIMPLE_TCP_ENABLE", "1").lower() in ("1", "true", "yes", "y")
+        # legacy 모드에서는 threadTrafficCommunication이 서버 자동 탐색+전송을 담당하므로
+        # 직접 TCP 전송은 기본 비활성화
+        legacy_enabled = os.getenv("TRAFFIC_LEGACY_ENABLE", TRAFFIC_LEGACY_ENABLE_DEFAULT).lower() in ("1", "true", "yes", "y")
+        tcp_default = "0" if legacy_enabled else "1"
+        self._tcp_enabled = os.getenv("TRAFFIC_SIMPLE_TCP_ENABLE", tcp_default).lower() in ("1", "true", "yes", "y")
         # self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.35") # 기훈이형 pc ip 
         # self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.20") # 내 pc ip 
         self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.39") # 주헌 pc ip 
@@ -208,6 +214,7 @@ class threadTrafficDataCollector(ThreadWithStop):
                 self._udp_semaphore_id_filter = None
         self._semaphore_subscriber = None
         self._cars_subscriber = None
+        self._location_subscriber = None
         if self.queues_list is not None:
             try:
                 self._semaphore_subscriber = messageHandlerSubscriber(
@@ -221,6 +228,12 @@ class threadTrafficDataCollector(ThreadWithStop):
                 )
             except Exception:
                 self._cars_subscriber = None
+            try:
+                self._location_subscriber = messageHandlerSubscriber(
+                    self.queues_list, Location, "fifo", True
+                )
+            except Exception:
+                self._location_subscriber = None
 
         self._ros_enabled = (
             rclpy is not None
@@ -267,6 +280,7 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._drain_uwb_queue()      # UWB serial 스레드에서 받은 좌표를 ROS publish
         self._poll_cars_queue()
         self._poll_semaphore_queue()
+        self._poll_location_queue()
         self._poll_udp_rx()
         if self._verbose_log:
             self._log_waiting_pose()
@@ -1092,6 +1106,53 @@ class threadTrafficDataCollector(ThreadWithStop):
                 return
             self._handle_tcp_payload(payload)
 
+    def _poll_location_queue(self):
+        """Legacy tcpClient가 서버에서 받은 Location 데이터를 ROS /gps로 publish."""
+        if self._location_subscriber is None:
+            return
+        for _ in range(64):
+            try:
+                payload = self._location_subscriber.receive()
+            except Exception:
+                return
+            if payload is None:
+                return
+            if not isinstance(payload, dict):
+                continue
+            # BFMC 서버 location 응답: {"type":"location", "posA":x, "posB":y} 또는 {"x":..., "y":...}
+            x = None
+            y = None
+            for xkey in ("posA", "x", "value1"):
+                if xkey in payload:
+                    try:
+                        x = float(payload[xkey])
+                    except (TypeError, ValueError):
+                        pass
+                    break
+            for ykey in ("posB", "y", "value2"):
+                if ykey in payload:
+                    try:
+                        y = float(payload[ykey])
+                    except (TypeError, ValueError):
+                        pass
+                    break
+            if x is None or y is None:
+                continue
+            covariance_xy = None
+            raw_quality = payload.get("quality")
+            if raw_quality is not None:
+                try:
+                    q = int(raw_quality)
+                    if q >= self._quality_threshold:
+                        sigma = 0.05 + (1.0 - q / 100.0) * 0.35
+                        covariance_xy = sigma ** 2
+                    else:
+                        continue  # quality 기준 미달 → 폐기
+                except (TypeError, ValueError):
+                    pass
+            rx_time = payload.get("_rx_time")
+            self._publish_gps(x, y, rx_time=rx_time, covariance_xy=covariance_xy)
+
     def _consume_tcp_rx_buffer(self):
         if not self._tcp_rx_buffer:
             return
@@ -1326,10 +1387,9 @@ class threadTrafficDataCollector(ThreadWithStop):
         msg.pose.pose.orientation.y = 0.0
         msg.pose.pose.orientation.z = 0.0
         msg.pose.pose.orientation.w = 1.0
-        if covariance_xy is None:
-            return  # quality 없는 패킷은 publish 안 함
         cov = [0.0] * 36
-        var_xy = float(covariance_xy)
+        # covariance 없으면 서버 location 기본값 사용 (sigma=0.15m)
+        var_xy = float(covariance_xy) if covariance_xy is not None else 0.0225
         cov[0]  = var_xy   # x
         cov[7]  = var_xy   # y
         cov[14] = 999.0    # z (UWB 미측정)
@@ -1523,7 +1583,7 @@ class processTrafficCommunication(WorkerProcess):
         self.queuesList = queueList
         self.logging = logging
         self.shared_memory = sharedMem()
-        self.filename = "src/data/TrafficCommunication/useful/publickey_server_test.pem"
+        self.filename = "src/data/TrafficCommunication/useful/publickey_server.pem"
         self.deviceID = deviceID
         self.frequency = frequency
         self.debugging = debugging
@@ -1547,7 +1607,7 @@ class processTrafficCommunication(WorkerProcess):
             self.threads.append(UWBSerialTh)
 
         # Legacy BFMC traffic-com stack (UDP discovery + Twisted TCP) can be enabled explicitly.
-        legacy_enabled = os.getenv("TRAFFIC_LEGACY_ENABLE", "0").lower() in ("1", "true", "yes", "y")
+        legacy_enabled = os.getenv("TRAFFIC_LEGACY_ENABLE", TRAFFIC_LEGACY_ENABLE_DEFAULT).lower() in ("1", "true", "yes", "y")
         if legacy_enabled and threadTrafficCommunication is not None:
             TrafficComTh = threadTrafficCommunication(
                 self.shared_memory, self.queuesList, self.deviceID, self.frequency, self.filename

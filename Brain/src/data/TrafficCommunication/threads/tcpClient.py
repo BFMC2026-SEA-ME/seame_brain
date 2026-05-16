@@ -27,6 +27,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 
 import json
+import time
 from threading import Event
 from src.utils.messages.allMessages import Location
 from src.utils.messages.messageHandlerSender import messageHandlerSender
@@ -87,7 +88,7 @@ class SingleConnection(protocol.Protocol):
 
         if da["type"] == "location":
             da["id"] = self.factory.locsysID # type: ignore
-            # fixed infinite loop on hooks (hopefully)
+            da["_rx_time"] = time.time()  # TCP 수신 시각 기록
             self.factory.sendLocation.send(da) # type: ignore
         else:
             print(f"\033[1;97m[ Traffic Communication ] :\033[0m \033[1;92mINFO\033[0m - Message from server \033[94m{self.factory.connectiondata}\033[0m") # type: ignore
