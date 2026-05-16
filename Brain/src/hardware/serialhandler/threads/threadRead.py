@@ -662,6 +662,12 @@ class threadRead(ThreadWithStop):
         self._watchdog_fired = False
 
     # ====================================== RUN ==========================================
+    def run(self):
+        try:
+            super(threadRead, self).run()
+        finally:
+            self._shutdown_ros()
+
     def thread_work(self):
         try:
             if not self._ros_init_attempted:
@@ -910,4 +916,3 @@ class threadRead(ThreadWithStop):
                 pass
             self._queue_timer = None
         super(threadRead, self).stop()
-        self._shutdown_ros()
