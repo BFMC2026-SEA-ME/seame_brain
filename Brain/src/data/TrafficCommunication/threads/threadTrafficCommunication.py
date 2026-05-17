@@ -63,13 +63,18 @@ class threadTrafficCommunication(ThreadWithStop):
     def serverLost(self):
         """If the server disconnects, we stop the factory listening and start the reactor listening"""
 
-        self.reactor.listenUDP(self.listenPort, self.udp_factory) # type: ignore
-        self.tcp_factory.stopListening() # type: ignore
-        self.period_task.stop()
+        try:
+            self.period_task.stop()
+        except Exception:
+            pass
+        try:
+            self.reactor.listenUDP(self.listenPort, self.udp_factory) # type: ignore
+        except Exception:
+            pass
 
     def serverFound(self, address, port):
         """If the server was found, we stop the factory listening, connect the reactor, and start the periodic task"""
-        
+
         self.reactor.connectTCP(address, port, self.tcp_factory) # type: ignore
         self.udp_factory.stopListening()
         self.period_task.start()
