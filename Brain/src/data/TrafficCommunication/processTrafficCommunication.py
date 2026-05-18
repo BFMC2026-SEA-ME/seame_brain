@@ -1007,17 +1007,7 @@ class threadTrafficDataCollector(ThreadWithStop):
 
             gps_xy = self._extract_gps_xy(payload)
             if gps_xy is not None:
-                if not isinstance(payload, dict) or "quality" not in payload:
-                    continue  # quality 없는 패킷 폐기
-                try:
-                    q = int(payload["quality"])
-                    if q < self._quality_threshold:
-                        continue  # 품질 기준 미달 패킷 폐기
-                    sigma = 0.05 + (1.0 - q / 100.0) * 0.35
-                    covariance_xy = sigma ** 2
-                except Exception:
-                    continue
-                self._gps_rx_queue.put((gps_xy[0], gps_xy[1], covariance_xy, time.time()))
+                self._gps_rx_queue.put((gps_xy[0], gps_xy[1], None, time.time()))
             # 계속 루프 → 버퍼에 남은 프레임 처리
         return rx_buffer  # unreachable, 타입 힌트 만족용
 
@@ -1141,20 +1131,8 @@ class threadTrafficDataCollector(ThreadWithStop):
                             continue
                     except (TypeError, ValueError):
                         continue
-            covariance_xy = None
-            raw_quality = payload.get("quality")
-            if raw_quality is not None:
-                try:
-                    q = int(raw_quality)
-                    if q >= self._quality_threshold:
-                        sigma = 0.05 + (1.0 - q / 100.0) * 0.35
-                        covariance_xy = sigma ** 2
-                    else:
-                        continue  # quality 기준 미달 → 폐기
-                except (TypeError, ValueError):
-                    pass
             rx_time = payload.get("_rx_time")
-            self._publish_gps(x, y, rx_time=rx_time, covariance_xy=covariance_xy)
+            self._publish_gps(x, y, rx_time=rx_time, covariance_xy=None)
 
     def _consume_tcp_rx_buffer(self):
         if not self._tcp_rx_buffer:
