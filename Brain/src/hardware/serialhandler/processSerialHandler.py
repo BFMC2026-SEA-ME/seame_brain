@@ -164,6 +164,12 @@ class processSerialHandler(WorkerProcess):
             for thread in self.threads:
                 if hasattr(thread, 'last_error_time'):
                     thread.last_error_time = None
+                # watchdog 타이머 재시작 (재연결 시점부터 5초 카운트)
+                if hasattr(thread, 'reset_watchdog_state'):
+                    thread.reset_watchdog_state()
+                # 엔진 상태 초기화 — KL 재초기화 강제
+                if hasattr(thread, 'reset_engine_state'):
+                    thread.reset_engine_state()
 
 
     def _wait_for_dashboard_and_notify(self):
