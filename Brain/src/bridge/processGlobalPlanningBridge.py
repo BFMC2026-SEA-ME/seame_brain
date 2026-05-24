@@ -25,17 +25,20 @@ try:
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-    from std_msgs.msg import String
+    from std_msgs.msg import String, Int32MultiArray
     from nav_msgs.msg import Path as NavPath
     from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 except Exception:  # allow running without ROS2 deps
     rclpy = None
     SingleThreadedExecutor = None
     Node = object
+
+
     QoSHistoryPolicy = None
     QoSProfile = None
     QoSReliabilityPolicy = None
     String = None
+    Int32MultiArray = None
     NavPath = None
     PoseStamped = None
     PoseWithCovarianceStamped = None
@@ -51,6 +54,7 @@ from src.utils.messages.allMessages import (  # type: ignore
     GlobalPath,
     GlobalPose,
     MapNodes,
+    OrderedCheckpoints,
     RoadSign,
     RequestMapNodes,
 )
@@ -61,6 +65,22 @@ from src.utils.messages.messageHandlerSubscriber import (  # type: ignore
 
 
 _GRAPHML_RETRY_SEC = 1.0
+_DEFAULT_CHECKPOINT_NODE_IDS = frozenset(
+    (
+        "75", "116", "127", "121", "185", "71", "27", "29", "31", "25",
+        "198", "42", "8", "301", "93", "80", "82", "419", "403", "399",
+        "343", "385", "362", "368", "317", "318", "56", "54", "261",
+        "239", "225", "228", "288", "158", "171", "436", "425",
+    )
+)
+
+
+def _parse_checkpoint_node_ids(raw: Optional[str]) -> frozenset[str]:
+    if not raw:
+        return _DEFAULT_CHECKPOINT_NODE_IDS
+
+    ids = {part.strip() for part in raw.split(",") if part.strip()}
+    return frozenset(ids) if ids else _DEFAULT_CHECKPOINT_NODE_IDS
 
 
 def _find_graphml_path() -> Optional[Path]:
@@ -75,9 +95,9 @@ def _find_graphml_path() -> Optional[Path]:
     ws_src = Path(__file__).resolve().parents[3]
     candidates = [
         # Prefer GraphML stored inside this Brain repo.
-        PROJECT_ROOT / "src" / "map" / "lab" / "lab_track_v1.graphml",
-        ws_src / "map" / "lab" / "lab_track_v1.graphml",
-        ws_src / "perception" / "maps" / "lab_track_v1.graphml",
+        PROJECT_ROOT / "src" / "map" / "bfmc" / "track2.graphml",
+        ws_src / "map" / "bfmc" / "track2.graphml",
+        ws_src / "perception" / "maps" / "track2.graphml",
     ]
 
     # Try ament_index_python if available.
@@ -86,7 +106,7 @@ def _find_graphml_path() -> Optional[Path]:
 
         try:
             share = Path(get_package_share_directory("perception"))
-            candidates.append(share / "maps" / "lab_track_v1.graphml")
+            candidates.append(share / "maps" / "track2.graphml")
         except Exception:
             pass
     except Exception:
@@ -180,12 +200,20 @@ class GlobalPlanningBridgeNode(Node):
         path_sender: messageHandlerSender,
         pose_sender: messageHandlerSender,
         road_sign_sender: messageHandlerSender,
+        checkpoints_sender: messageHandlerSender,
     ):
         super().__init__("global_planning_bridge")
         self._queues_list = queues_list
         self._path_sender = path_sender
         self._pose_sender = pose_sender
         self._road_sign_sender = road_sign_sender
+        self._checkpoints_sender = checkpoints_sender
+        self._checkpoint_node_ids = _parse_checkpoint_node_ids(os.environ.get("DASHBOARD_CHECKPOINT_NODE_IDS"))
+        self._last_ordered_checkpoints: Tuple[str, ...] = ()
+        self._pending_ordered_checkpoints: Optional[Tuple[str, ...]] = None
+        self._last_checkpoints_send = 0.0
+        self._checkpoints_send_period = float(os.environ.get("ORDERED_CHECKPOINTS_SEND_PERIOD", "0.5"))
+        self._checkpoints_resend_period = 3.0  # 프론트 연결 전 전송된 경우 대비 주기적 재전송
         self._last_path_send = 0.0
         self._path_send_period = 0.5  # 2 Hz
         self._last_pose_send = 0.0
@@ -198,20 +226,33 @@ class GlobalPlanningBridgeNode(Node):
             "yes",
             "y",
         )
+        self._enable_checkpoint_stream = str(
+            os.environ.get("DASHBOARD_ENABLE_ORDERED_CHECKPOINTS", "1")
+        ).lower() in (
+            "1",
+            "true",
+            "yes",
+            "y",
+        )
         self._allowed_classes = {
-            "ONEWAY",
-            "HIGHWAYENTRANCE",
-            "STOPSIGN",
-            "ROUNDABOUT",
-            "PARK",
-            "CROSSWALK",
-            "NOENTRY",
-            "HIGHWAYEXIT",
-            "PRIORITY",
-            "LIGHTS",
-            "BLOCK",
-            "PEDESTRIAN",
-            "CAR",
+            "ONEWAY", #8
+            "HIGHWAYENTRANCE", #5
+            "STOPSIGN", #1
+            "ROUNDABOUT", #7
+            "PARK", #3
+            "CROSSWALK", #4
+            "NOENTRY",#9
+            "HIGHWAYEXIT", #6
+            "PRIORITY",#2
+            "LIGHTS", #14
+            "BLOCK",#13
+            "CAR", #10
+            "PEDESTRIAN_ON_CROSSWALK", #11
+            "PEDESTRIAN_ON_ROAD" , #12
+            "FOG", #15
+            "TUNNEL",#16
+            "RAMP"#17
+
         }
 
         goal_qos = QoSProfile(
@@ -224,7 +265,6 @@ class GlobalPlanningBridgeNode(Node):
             depth=1,
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
         )
-
         self._goal_pub = self.create_publisher(String, "/global_planning/goal_node_id", goal_qos)
         self._path_sub = None
         if self._enable_path_stream:
@@ -292,6 +332,83 @@ class GlobalPlanningBridgeNode(Node):
         except Exception as exc:
             self.get_logger().warning(f"Failed to subscribe {self._obstacle_roi_topic}: {exc}")
 
+        self._track_node_ids_sub = None
+        self._track_node_ids_qos = path_qos
+        if self._enable_checkpoint_stream:
+            self.get_logger().info("OrderedCheckpoints stream will start after first /global_pose.")
+        else:
+            self.get_logger().info(
+                "OrderedCheckpoints stream to dashboard is disabled "
+                "(DASHBOARD_ENABLE_ORDERED_CHECKPOINTS=0)."
+            )
+
+    def _ensure_track_node_ids_subscription(self) -> None:
+        if (
+            not self._enable_checkpoint_stream
+            or self._track_node_ids_sub is not None
+            or Int32MultiArray is None
+        ):
+            return
+        try:
+            self._track_node_ids_sub = self.create_subscription(
+                Int32MultiArray,
+                "track_path_node_ids",
+                self._on_track_node_ids,
+                self._track_node_ids_qos,
+            )
+            self.get_logger().info("Subscribed to track_path_node_ids after /global_pose became active.")
+        except Exception as exc:
+            self.get_logger().warning(f"Failed to subscribe track_path_node_ids: {exc}")
+
+    def _on_track_node_ids(self, msg) -> None:
+        seen: set = set()
+        ordered: List[str] = []
+        for nid in msg.data:
+            node_id = str(nid)
+            if node_id in self._checkpoint_node_ids and node_id not in seen:
+                seen.add(node_id)
+                ordered.append(node_id)
+
+        ordered_tuple = tuple(ordered)
+        if ordered_tuple == self._last_ordered_checkpoints:
+            self._pending_ordered_checkpoints = None
+            return
+
+        now = time.time()
+        if now - self._last_checkpoints_send >= self._checkpoints_send_period:
+            self._send_ordered_checkpoints(ordered_tuple, now)
+        else:
+            self._pending_ordered_checkpoints = ordered_tuple
+
+    def flush_pending_checkpoints(self) -> None:
+        if self._pending_ordered_checkpoints is None:
+            return
+        if self._pending_ordered_checkpoints == self._last_ordered_checkpoints:
+            self._pending_ordered_checkpoints = None
+            return
+
+        now = time.time()
+        if now - self._last_checkpoints_send < self._checkpoints_send_period:
+            return
+
+        pending = self._pending_ordered_checkpoints
+        self._pending_ordered_checkpoints = None
+        self._send_ordered_checkpoints(pending, now)
+
+    def resend_checkpoints_if_stale(self) -> None:
+        """프론트엔드가 나중에 연결된 경우를 대비해 마지막 체크포인트를 주기적으로 재전송."""
+        if not self._last_ordered_checkpoints:
+            return
+        now = time.time()
+        if now - self._last_checkpoints_send >= self._checkpoints_resend_period:
+            self._checkpoints_sender.send(list(self._last_ordered_checkpoints))
+            self._last_checkpoints_send = now
+
+    def _send_ordered_checkpoints(self, ordered: Tuple[str, ...], now: float) -> None:
+        self._last_ordered_checkpoints = ordered
+        self._last_checkpoints_send = now
+        self._checkpoints_sender.send(list(ordered))
+
     def publish_goal(self, node_id: str) -> None:
         msg = String()
         msg.data = str(node_id)
@@ -321,6 +438,7 @@ class GlobalPlanningBridgeNode(Node):
         return math.atan2(siny_cosp, cosy_cosp)
 
     def _send_pose(self, x: float, y: float, frame: str, qx: float, qy: float, qz: float, qw: float) -> None:
+        self._ensure_track_node_ids_subscription()
         now = time.time()
         if now - self._last_pose_send < self._pose_send_period:
             return
@@ -451,21 +569,29 @@ class GlobalPlanningBridgeNode(Node):
 
         alias_map = {
             "ONEWAY": "ONEWAY",
+            "ONEWAYROAD": "ONEWAY",
             "HIGHWAYENTRANCE": "HIGHWAYENTRANCE",
             "STOPSIGN": "STOPSIGN",
+            "STOP": "STOPSIGN",
             "ROUNDABOUT": "ROUNDABOUT",
             "PARK": "PARK",
             "PARKING": "PARK",
             "CROSSWALK": "CROSSWALK",
             "NOENTRY": "NOENTRY",
+            "DONOTENTER": "NOENTRY",
             "HIGHWAYEXIT": "HIGHWAYEXIT",
             "PRIORITY": "PRIORITY",
             "LIGHTS": "LIGHTS",
             "TRAFFICLIGHT": "LIGHTS",
             "BLOCK": "BLOCK",
             "ROADBLOCK": "BLOCK",
-            "PEDESTRIAN": "PEDESTRIAN",
+            "PEDESTRIANONCROSSWALK": "PEDESTRIAN_ON_CROSSWALK",
+            "PEDESTRIANONROAD": "PEDESTRIAN_ON_ROAD",
             "CAR": "CAR",
+            "STATICCARONPARKING": "CAR",
+            "FOG": "FOG",
+            "TUNNEL": "TUNNEL",
+            "RAMP": "RAMP",
         }
         canonical = alias_map.get(normalized)
         if canonical in self._allowed_classes:
@@ -490,10 +616,18 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
         self._pose_sender = messageHandlerSender(self._queues_list, GlobalPose, drop_old=True)
         self._map_nodes_sender = messageHandlerSender(self._queues_list, MapNodes, drop_old=True)
         self._road_sign_sender = messageHandlerSender(self._queues_list, RoadSign, drop_old=True)
+        self._checkpoints_sender = messageHandlerSender(self._queues_list, OrderedCheckpoints, drop_old=True)
 
         self._graph_sent = False
         self._last_graph_try = 0.0
         self._graph_path: Optional[Path] = None
+        self._init_failed_permanently = False
+
+    def run(self) -> None:
+        try:
+            super().run()
+        finally:
+            self._shutdown_ros()
 
     def thread_work(self) -> None:
         # Handle GraphML loading (non-ROS).
@@ -503,8 +637,7 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
             self._maybe_send_graph_nodes(force=True)
 
         # Initialize ROS if needed.
-        if rclpy is None:
-            time.sleep(0.1)
+        if rclpy is None or self._init_failed_permanently:
             return
 
         if self._node is None or self._executor is None:
@@ -522,17 +655,24 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
 
         try:
             self._executor.spin_once(timeout_sec=0.01)
+            self._node.flush_pending_checkpoints()
+            self._node.resend_checkpoints_if_stale()
         except Exception as exc:
+            if self._blocker.is_set():
+                return
             print(f"[GlobalPlanningBridge] spin_once failed: {exc}")
-            self._reset_ros()
+            self._destroy_node_only()
             time.sleep(0.1)
 
     def stop(self) -> None:
-        self._reset_ros()
+        # 플래그만 세팅. 실제 ROS 정리는 run()의 finally에서 스레드 자신이 수행.
+        self._init_failed_permanently = True
         super().stop()
 
     def _maybe_init_ros(self) -> None:
         if self._node is not None:
+            return
+        if self._blocker.is_set():
             return
 
         try:
@@ -540,15 +680,18 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
                 rclpy.init(args=None)
 
             self._node = GlobalPlanningBridgeNode(
-                self._queues_list, self._path_sender, self._pose_sender, self._road_sign_sender
+                self._queues_list, self._path_sender, self._pose_sender, self._road_sign_sender, self._checkpoints_sender
             )
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
         except Exception as exc:
             print(f"[GlobalPlanningBridge] init failed: {exc}")
-            self._reset_ros()
+            self._node = None
+            self._executor = None
+            self._init_failed_permanently = True
 
-    def _reset_ros(self) -> None:
+    def _destroy_node_only(self) -> None:
+        # node/executor만 정리. rclpy context는 유지하여 재초기화 가능.
         if self._executor and self._node:
             try:
                 self._executor.remove_node(self._node)
@@ -563,14 +706,17 @@ class _GlobalPlanningBridgeThread(ThreadWithStop):
                 self._node.destroy_node()
             except Exception:
                 pass
+        self._executor = None
+        self._node = None
+
+    def _shutdown_ros(self) -> None:
+        # 완전 종료: node + rclpy context 모두 정리.
+        self._destroy_node_only()
         if rclpy is not None and rclpy.ok():
             try:
                 rclpy.shutdown()
             except Exception:
                 pass
-
-        self._executor = None
-        self._node = None
 
     def _maybe_send_graph_nodes(self, force: bool = False) -> None:
         if self._graph_sent and not force:
@@ -622,6 +768,7 @@ if __name__ == "__main__":
 
     queue_list: MutableMapping[str, object] = {
         "General": Queue(),
+        "Dashboard": Queue(maxsize=4),
         "Config": Queue(),
     }
 

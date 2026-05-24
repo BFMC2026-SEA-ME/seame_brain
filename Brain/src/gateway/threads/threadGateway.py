@@ -42,7 +42,7 @@ class threadGateway(ThreadWithStop):
     # ===================================== INIT =========================================
 
     def __init__(self, queueList, logger, debugging):
-        super(threadGateway, self).__init__(pause=0.001)
+        super(threadGateway, self).__init__(pause=0.005)
         self.logger = logger
         self.debugging = debugging
         self.sendingList = {}
@@ -51,6 +51,7 @@ class threadGateway(ThreadWithStop):
         self._critical_batch_limit = 32
         self._warning_batch_limit = 32
         self._general_batch_limit = 128
+        self._dashboard_batch_limit = 4
         self._config_batch_limit = 32
 
     # =================================== SUBSCRIBE ======================================
@@ -124,7 +125,6 @@ class threadGateway(ThreadWithStop):
             for element, pipe in self.sendingList[Owner][Id].items():
                 # We send a dictionary that contain the type of the message and message
                 try:
-                    # sub이 수신안하면 막힐수도있다.(버퍼가 꽉차서)
                     pipe.send({"Type": Type, "value": Value, "id": Id, "Owner": Owner})
                     if self.debugging:
                         self.logger.warning(message)
@@ -220,6 +220,7 @@ class threadGateway(ThreadWithStop):
                         break
                 if latest_image is not None:
                     self.send(latest_image)
+        self._drain_queue("Dashboard", self._dashboard_batch_limit)
         self._process_config_messages(self._config_batch_limit)
 
         # print(time.perf_counter_ns())

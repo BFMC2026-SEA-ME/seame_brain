@@ -68,7 +68,7 @@ class threadWrite(ThreadWithStop):
 
     # ===================================== INIT =========================================
     def __init__(self, process, logFile, queues, logger, debugger = False, example=False):
-        super(threadWrite, self).__init__(pause=0.001)
+        super(threadWrite, self).__init__(pause=0.003)
         self.process = process
         self.queuesList = queues
         self.logFile = logFile
@@ -172,17 +172,6 @@ class threadWrite(ThreadWithStop):
         self._stop_sent = False
         self._send_immediate_stop()
 
-    def reset_engine_state(self):
-        """NUCLEO 재연결 후 엔진 상태 초기화 — KL 재초기화 전까지 모터 명령 차단."""
-        self.running = False
-        self.engineEnabled = False
-        self._stop_latched = False
-        self._stop_sent = False
-        self._drain_motion_pipes()
-        print(
-            "\033[1;97m[ Serial Handler ] :\033[0m \033[1;93mWARNING\033[0m"
-            " - 엔진 상태 초기화 — NUCLEO KL 재초기화 필요 (대시보드에서 ON 다시 누르세요)"
-        )
 
     def _apply_stop_once(self):
         if self._stop_sent:

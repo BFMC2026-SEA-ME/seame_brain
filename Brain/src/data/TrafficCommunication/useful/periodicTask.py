@@ -39,12 +39,16 @@ class periodicTask(task.LoopingCall):
         """
         Start the periodic task with the specified interval.
         """
-        super().start(self.interval)
+        if self.running:
+            return
+        super().start(self.interval, now=False)
 
     def periodic_check(self):
         """
         Perform the periodic check and send data to the server.
         """
+        if hasattr(self.tcp_factory, "is_connected") and not self.tcp_factory.is_connected():
+            return
         tosend = self.shrd_mem.get()
         for mem in tosend:
             # [ADDED][historyData] Keep historyData id as integer in outbound JSON.
@@ -53,4 +57,5 @@ class periodicTask(task.LoopingCall):
                     mem["value1"] = int(mem["value1"])
                 except Exception:
                     pass
-            self.tcp_factory.send_data_to_server(mem)
+            if not self.tcp_factory.send_data_to_server(mem):
+                break

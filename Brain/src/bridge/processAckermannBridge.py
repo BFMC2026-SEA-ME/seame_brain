@@ -206,9 +206,20 @@ class _AckermannBridgeThread(ThreadWithStop):
         self._queues_list = queues_list
         self._executor: Optional[SingleThreadedExecutor] = None
         self._node: Optional[AckermannBridgeNode] = None
+        self._init_failed_permanently = False
+
+    def run(self) -> None:
+        try:
+            super().run()
+        finally:
+            self._shutdown_ros()
 
     def thread_work(self) -> None:
         # 주기마다 executor를 한 번씩 spin; 실패 시 재초기화합니다.
+        if self._init_failed_permanently:
+            time.sleep(0.1)
+            return
+
         if self._node is None or self._executor is None:
             self._maybe_init_ros()
             time.sleep(0.05)
@@ -217,18 +228,22 @@ class _AckermannBridgeThread(ThreadWithStop):
         try:
             self._executor.spin_once(timeout_sec=0.005)
         except Exception as exc:
+            if self._blocker.is_set():
+                return
             print(f"[AckermannBridge] spin_once failed: {exc}")
-            self._reset_ros()
+            self._destroy_node_only()
             time.sleep(0.1)
 
     def stop(self) -> None:
-        # 스레드를 중지하고 ROS 리소스를 정리합니다.
-        self._reset_ros()
+        # 플래그만 세팅. 실제 ROS 정리는 run()의 finally에서 스레드 자신이 수행.
+        self._init_failed_permanently = True
         super().stop()
 
     def _maybe_init_ros(self) -> None:
         # 필요 시 rclpy/node/executor를 초기화합니다.
         if self._node is not None:
+            return
+        if self._blocker.is_set():
             return
 
         try:
@@ -240,10 +255,12 @@ class _AckermannBridgeThread(ThreadWithStop):
             self._executor.add_node(self._node)
         except Exception as exc:
             print(f"[AckermannBridge] init failed: {exc}")
-            self._reset_ros()
+            self._node = None
+            self._executor = None
+            self._init_failed_permanently = True
 
-    def _reset_ros(self) -> None:
-        # executor/node/rclpy 컨텍스트를 안전하게 종료합니다.
+    def _destroy_node_only(self) -> None:
+        # node/executor만 정리. rclpy context는 유지하여 재초기화 가능.
         if self._executor and self._node:
             try:
                 self._executor.remove_node(self._node)
@@ -258,14 +275,17 @@ class _AckermannBridgeThread(ThreadWithStop):
                 self._node.destroy_node()
             except Exception:
                 pass
+        self._executor = None
+        self._node = None
+
+    def _shutdown_ros(self) -> None:
+        # 완전 종료: node + rclpy context 모두 정리.
+        self._destroy_node_only()
         if rclpy.ok():
             try:
                 rclpy.shutdown()
             except Exception:
                 pass
-
-        self._executor = None
-        self._node = None
 
 
 def create_ackermann_bridge_process(

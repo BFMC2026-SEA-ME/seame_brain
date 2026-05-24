@@ -70,6 +70,7 @@ if __name__ == "__main__":
         "Critical": Queue(),
         "Warning": Queue(),
         "General": Queue(),
+        "Dashboard": Queue(maxsize=4),
         "Config": Queue(),
         "Image": Queue(maxsize=1),
     }

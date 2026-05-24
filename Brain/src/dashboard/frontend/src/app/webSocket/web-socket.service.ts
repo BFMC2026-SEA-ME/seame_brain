@@ -70,7 +70,9 @@ export class WebSocketService {
     'GlobalPath',
     'MapNodes',
     'GlobalPose',
-    'RoadSign'
+    'RoadSign',
+    'OrderedCheckpoints',
+    'NetworkStats'
   ]);
 
   constructor() {
@@ -286,6 +288,14 @@ export class WebSocketService {
 
   receiveRoadSign(): Observable<any> {
     return this.webSocket.fromEvent('RoadSign');
+  }
+
+  receiveOrderedCheckpoints(): Observable<any> {
+    return this.webSocket.fromEvent('OrderedCheckpoints');
+  }
+
+  receiveNetworkStats(): Observable<any> {
+    return this.webSocket.fromEvent('NetworkStats');
   }
 
   receiveSteerLimits(): Observable<any> {

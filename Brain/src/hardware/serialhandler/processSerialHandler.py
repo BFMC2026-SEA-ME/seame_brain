@@ -171,6 +171,7 @@ class processSerialHandler(WorkerProcess):
                 if hasattr(thread, 'reset_engine_state'):
                     thread.reset_engine_state()
 
+
     def _wait_for_dashboard_and_notify(self):
         """Wait for dashboard to be ready, then notify connected state once without blocking init."""
         while not self.dashboard_ready.is_set():

@@ -44,11 +44,13 @@ from src.data.TrafficCommunication.useful.sharedMem import sharedMem
 from src.templates.workerprocess import WorkerProcess
 from src.templates.threadwithstop import ThreadWithStop
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
-from src.utils.messages.allMessages import Cars, Semaphores
+from src.utils.messages.allMessages import Cars, Location, Semaphores
 try:
     from src.data.TrafficCommunication.threads.threadTrafficCommunication import threadTrafficCommunication
 except Exception:
     threadTrafficCommunication = None
+
+TRAFFIC_LEGACY_ENABLE_DEFAULT = "1"
 
 try:
     import rclpy
@@ -84,8 +86,10 @@ class threadTrafficDataCollector(ThreadWithStop):
     SPEED_TWIST_TOPIC = "/wheel_twist"     # expected type: geometry_msgs/TwistWithCovarianceStamped (linear.x in m/s)
     HISTORY_TOPIC = "/obstacle_roi/event_xy"   # expected type: std_msgs/String ("class_name,x,y")
 
-    def __init__(self, shared_memory, queues_list=None, logger=None, debugging=False):
+    def __init__(self, shared_memory, queues_list=None, logger=None, debugging=False, uwb_queue=None, device_id=None):
         super(threadTrafficDataCollector, self).__init__(pause=0.05) # 20Hz, 10Hz GPS 패킷 손실 방지
+        self._uwb_queue = uwb_queue  # threadUWBSerial이 넣어주는 (x, y, quality, rx_time) 큐
+        self._device_id = device_id
         self.shared_memory = shared_memory
         self.queues_list = queues_list
         self.logger = logger
@@ -94,6 +98,8 @@ class threadTrafficDataCollector(ThreadWithStop):
         self.latest_pos = None
         self.latest_rot = None
         self.latest_speed = None
+        self._last_pos_for_heading: tuple | None = None
+        self._heading_min_dist_m = float(os.getenv("TRAFFIC_HEADING_MIN_DIST_M", "0.05"))
         # [ADDED][historyData] last parsed event payload as (event_id, x, y)
         self.latest_history = None
         self._history_update_seq = 0
@@ -111,20 +117,20 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._history_topic = os.getenv("TRAFFIC_HISTORY_TOPIC", self.HISTORY_TOPIC)
         # [ADDED][historyData] deterministic class->event_id mapping (requested table).
         self._history_class_to_id = {
-            "STOP": 1,
+            "STOPSIGN": 1,
             "PRIORITY": 2,
-            "PARKING": 3,
+            "PARK": 3,
             "CROSSWALK": 4,
             "HIGHWAYENTRANCE": 5,
             "HIGHWAYEXIT": 6,
             "ROUNDABOUT": 7,
-            "ONEWAYROAD": 8,
+            "ONEWAY": 8,
             "NOENTRY": 9,
-            "STATICCARONPARKING": 10,
-            "PEDESTRIAN": 11,
-            "PEDESTRIANONROAD": 12,
-            "ROADBLOCK": 13,
-            "TRAFFICLIGHT": 14,
+            "CAR": 10,
+            "PEDESTRIAN_ON_CROSSWALK": 11,
+            "PEDESTRIAN_ON_ROAD": 12,
+            "BLOCK": 13,
+            "LIGHTS": 14,
             "FOG": 15,
             "TUNNEL": 16,
             "RAMP": 17,
@@ -149,19 +155,26 @@ class threadTrafficDataCollector(ThreadWithStop):
         # TCP socket lock: shared between main thread (send) and RX thread (recv)
         self._sock_lock = threading.Lock()
         # GPS coordinates received from server, passed from RX thread to main thread for ROS publish
+        # items: (x, y, covariance_xy_or_None, rx_time)
         self._gps_rx_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._quality_threshold = int(os.getenv("UWB_SERIAL_QUALITY_THRESHOLD", "30"))
         # RX thread handle
         self._tcp_rx_thread: threading.Thread | None = None
 
         # direct TCP sender (based on proven test script)
-        self._tcp_enabled = os.getenv("TRAFFIC_SIMPLE_TCP_ENABLE", "1").lower() in ("1", "true", "yes", "y")
-        # self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.247") # 기훈이형 pc ip 
-        self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.20") # 기훈이형 pc ip 
+        # legacy 모드에서는 threadTrafficCommunication이 서버 자동 탐색+전송을 담당하므로
+        # 직접 TCP 전송은 기본 비활성화
+        legacy_enabled = os.getenv("TRAFFIC_LEGACY_ENABLE", TRAFFIC_LEGACY_ENABLE_DEFAULT).lower() in ("1", "true", "yes", "y")
+        tcp_default = "0" if legacy_enabled else "1"
+        self._tcp_enabled = os.getenv("TRAFFIC_SIMPLE_TCP_ENABLE", tcp_default).lower() in ("1", "true", "yes", "y")
+        # self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.35") # 기훈이형 pc ip 
+        # self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.20") # 내 pc ip 
+        self._tcp_host = os.getenv("TRAFFIC_TCP_HOST", "192.168.86.39") # 주헌 pc ip 
 
         
         self._tcp_port = int(os.getenv("TRAFFIC_TCP_PORT", "5000"))
         self._tcp_bind_ip = os.getenv("TRAFFIC_TCP_BIND_IP", "").strip()
-        self._tcp_timeout = float(os.getenv("TRAFFIC_TCP_CONNECT_TIMEOUT", "3.0"))
+        self._tcp_timeout = float(os.getenv("TRAFFIC_TCP_CONNECT_TIMEOUT", "0.5"))
         self._tcp_send_speed = os.getenv("TRAFFIC_TCP_SEND_SPEED", "1").lower() in ("1", "true", "yes", "y")
         self._sock = None
         self._tcp_rx_buffer = ""
@@ -175,15 +188,10 @@ class threadTrafficDataCollector(ThreadWithStop):
         self._gps_frame_id = os.getenv("TRAFFIC_GPS_FRAME_ID", "map")
         self._gps_pub = None
         self._gps_min_publish_period = float(os.getenv("TRAFFIC_GPS_MIN_PUBLISH_PERIOD", "0.1"))
+        # 데이터 지연 측정후 수정하기 . 기본 1초 
+        self._uwb_measurement_delay = float(os.getenv("UWB_MEASUREMENT_DELAY_S", "1.0"))
         self._last_gps_publish = 0.0
-        car_id_filter = os.getenv("TRAFFIC_GPS_CAR_ID", "0").strip()
-        if car_id_filter in ("", "*"):
-            self._gps_car_id_filter = None
-        else:
-            try:
-                self._gps_car_id_filter = int(car_id_filter)
-            except ValueError:
-                self._gps_car_id_filter = None
+        self._gps_car_id_filter = self._device_id
         # UDP direct listen is optional; prefer queue feed from processSemaphores to avoid port conflicts.
         self._udp_enabled = os.getenv("TRAFFIC_UDP_SEMAPHORE_ENABLE", "0").lower() in ("1", "true", "yes", "y")
         self._udp_port = int(os.getenv("TRAFFIC_UDP_SEMAPHORE_PORT", "5007"))
@@ -200,6 +208,7 @@ class threadTrafficDataCollector(ThreadWithStop):
                 self._udp_semaphore_id_filter = None
         self._semaphore_subscriber = None
         self._cars_subscriber = None
+        self._location_subscriber = None
         if self.queues_list is not None:
             try:
                 self._semaphore_subscriber = messageHandlerSubscriber(
@@ -209,10 +218,16 @@ class threadTrafficDataCollector(ThreadWithStop):
                 self._semaphore_subscriber = None
             try:
                 self._cars_subscriber = messageHandlerSubscriber(
-                    self.queues_list, Cars, "fifo", True
+                    self.queues_list, Cars, "lastOnly", True
                 )
             except Exception:
                 self._cars_subscriber = None
+            try:
+                self._location_subscriber = messageHandlerSubscriber(
+                    self.queues_list, Location, "lastOnly", True
+                )
+            except Exception:
+                self._location_subscriber = None
 
         self._ros_enabled = (
             rclpy is not None
@@ -251,12 +266,15 @@ class threadTrafficDataCollector(ThreadWithStop):
 
     def thread_work(self):
         self._ensure_tcp_rx_thread()
+        self._connect_tcp_if_needed()  # ROS 데이터 유무와 무관하게 항상 연결 유지
         self._spin_ros_once()
         self._flush_to_shared_memory()
         self._flush_to_tcp()
         self._drain_gps_rx_queue()   # RX 스레드에서 받은 GPS 좌표를 ROS publish
+        self._drain_uwb_queue()      # UWB serial 스레드에서 받은 좌표를 ROS publish
         self._poll_cars_queue()
         self._poll_semaphore_queue()
+        self._poll_location_queue()
         self._poll_udp_rx()
         if self._verbose_log:
             self._log_waiting_pose()
@@ -366,15 +384,18 @@ class threadTrafficDataCollector(ThreadWithStop):
         x = float(msg.pose.position.x)
         y = float(msg.pose.position.y)
         self.latest_pos = (x, y)
-        # Use clockwise-positive yaw in [0, 360) to match external TCP test format.
-        q = msg.pose.orientation
-        q_norm_sq = q.w**2 + q.x**2 + q.y**2 + q.z**2
-        if q_norm_sq < 0.9 or q_norm_sq > 1.1:
-            return
-        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        yaw_deg_ccw = math.degrees(math.atan2(siny_cosp, cosy_cosp))
-        self.latest_rot = (-yaw_deg_ccw) % 360.0
+
+        # UWB 위치 차이로 절대 헤딩 계산: 맵 +x(오른쪽) = 0°, 시계방향 양수
+        if self._last_pos_for_heading is not None:
+            px, py = self._last_pos_for_heading
+            dx = x - px
+            dy = y - py
+            if math.hypot(dx, dy) >= self._heading_min_dist_m:
+                heading_ccw = math.degrees(math.atan2(dy, dx))
+                self.latest_rot = (-heading_ccw) % 360.0
+                self._last_pos_for_heading = (x, y)
+        else:
+            self._last_pos_for_heading = (x, y)
 
         # Optional fallback speed from pose delta when wheel speed topics are missing/stale.
         now = time.monotonic()
@@ -578,30 +599,29 @@ class threadTrafficDataCollector(ThreadWithStop):
             if any(token in normalized for token in ("EXIT", "OUT")):
                 return "HIGHWAYEXIT"
         alias_map = {
-            "STOP": "STOP",
-            "STOPSIGN": "STOP",
+            "STOP": "STOPSIGN",
+            "STOPSIGN": "STOPSIGN",
             "PRIORITY": "PRIORITY",
-            "PARKING": "PARKING",
-            "PARK": "PARKING",
+            "PARKING": "PARK",
+            "PARK": "PARK",
             "CROSSWALK": "CROSSWALK",
             "HIGHWAYENTRANCE": "HIGHWAYENTRANCE",
             "HIGHWAYEXIT": "HIGHWAYEXIT",
             "ROUNDABOUT": "ROUNDABOUT",
-            "ONEWAYROAD": "ONEWAYROAD",
-            "ONEWAY": "ONEWAYROAD",
+            "ONEWAYROAD": "ONEWAY",
+            "ONEWAY": "ONEWAY",
             "NOENTRY": "NOENTRY",
             "DONOTENTER": "NOENTRY",
-            "STATICCARONPARKING": "STATICCARONPARKING",
-            "STATICCAR": "STATICCARONPARKING",
-            "PARKEDCAR": "STATICCARONPARKING",
-            "CAR": "STATICCARONPARKING",
-            "PEDESTRIAN": "PEDESTRIAN",
-            "PEDESTRIANONROAD": "PEDESTRIANONROAD",
-            "PERSON": "PEDESTRIAN",
-            "ROADBLOCK": "ROADBLOCK",
-            "BLOCK": "ROADBLOCK",
-            "TRAFFICLIGHT": "TRAFFICLIGHT",
-            "LIGHTS": "TRAFFICLIGHT",
+            "STATICCARONPARKING": "CAR",
+            "STATICCAR": "CAR",
+            "PARKEDCAR": "CAR",
+            "CAR": "CAR",
+            "PEDESTRIANONCROSSWALK": "PEDESTRIAN_ON_CROSSWALK",
+            "PEDESTRIANONROAD": "PEDESTRIAN_ON_ROAD",
+            "ROADBLOCK": "BLOCK",
+            "BLOCK": "BLOCK",
+            "TRAFFICLIGHT": "LIGHTS",
+            "LIGHTS": "LIGHTS",
             "FOG": "FOG",
             "TUNNEL": "TUNNEL",
             "RAMP": "RAMP",
@@ -987,7 +1007,7 @@ class threadTrafficDataCollector(ThreadWithStop):
 
             gps_xy = self._extract_gps_xy(payload)
             if gps_xy is not None:
-                self._gps_rx_queue.put((gps_xy[0], gps_xy[1], time.time()))
+                self._gps_rx_queue.put((gps_xy[0], gps_xy[1], None, time.time()))
             # 계속 루프 → 버퍼에 남은 프레임 처리
         return rx_buffer  # unreachable, 타입 힌트 만족용
 
@@ -995,10 +1015,21 @@ class threadTrafficDataCollector(ThreadWithStop):
         """메인 스레드: RX 스레드가 쌓아 둔 GPS 좌표를 ROS publish."""
         while not self._gps_rx_queue.empty():
             try:
-                x, y, rx_time = self._gps_rx_queue.get_nowait()
+                x, y, covariance_xy, rx_time = self._gps_rx_queue.get_nowait()
             except queue.Empty:
                 break
-            self._publish_gps(x, y, rx_time)
+            self._publish_gps(x, y, rx_time, covariance_xy)
+
+    def _drain_uwb_queue(self):
+        """메인 스레드: UWB serial 스레드가 쌓아 둔 좌표를 ROS publish."""
+        if self._uwb_queue is None:
+            return
+        while not self._uwb_queue.empty():
+            try:
+                x, y, covariance_xy, rx_time = self._uwb_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._publish_gps(x, y, rx_time, covariance_xy)
 
     def _poll_udp_rx(self):
         if not self._udp_enabled:
@@ -1058,6 +1089,50 @@ class threadTrafficDataCollector(ThreadWithStop):
             if payload is None:
                 return
             self._handle_tcp_payload(payload)
+
+    def _poll_location_queue(self):
+        """Legacy tcpClient가 서버에서 받은 Location 데이터를 ROS /gps로 publish."""
+        if self._location_subscriber is None:
+            return
+        for _ in range(64):
+            try:
+                payload = self._location_subscriber.receive()
+            except Exception:
+                return
+            if payload is None:
+                return
+            if not isinstance(payload, dict):
+                continue
+            # BFMC 서버 location 응답: {"type":"location", "posA":x, "posB":y} 또는 {"x":..., "y":...}
+            x = None
+            y = None
+            for xkey in ("posA", "x", "value1"):
+                if xkey in payload:
+                    try:
+                        x = float(payload[xkey])
+                    except (TypeError, ValueError):
+                        pass
+                    break
+            for ykey in ("posB", "y", "value2"):
+                if ykey in payload:
+                    try:
+                        y = float(payload[ykey])
+                    except (TypeError, ValueError):
+                        pass
+                    break
+            if x is None or y is None:
+                continue
+            # TRAFFIC_GPS_CAR_ID 필터 적용
+            if self._gps_car_id_filter is not None:
+                raw_id = payload.get("id")
+                if raw_id is not None:
+                    try:
+                        if int(raw_id) != self._gps_car_id_filter:
+                            continue
+                    except (TypeError, ValueError):
+                        continue
+            rx_time = payload.get("_rx_time")
+            self._publish_gps(x, y, rx_time=rx_time, covariance_xy=None)
 
     def _consume_tcp_rx_buffer(self):
         if not self._tcp_rx_buffer:
@@ -1253,12 +1328,13 @@ class threadTrafficDataCollector(ThreadWithStop):
             return None
 
         if self._gps_car_id_filter is not None:
-            try:
-                car_id = int(payload.get("id"))
-            except Exception:
-                return None
-            if car_id != self._gps_car_id_filter:
-                return None
+            raw_id = payload.get("id")
+            if raw_id is not None:  # id 필드 없으면 필터 적용 안 함 (우리 차 위치 포맷)
+                try:
+                    if int(raw_id) != self._gps_car_id_filter:
+                        return None
+                except Exception:
+                    return None
 
         try:
             x = float(payload.get("x"))
@@ -1267,7 +1343,7 @@ class threadTrafficDataCollector(ThreadWithStop):
             return None
         return (x, y)
 
-    def _publish_gps(self, x, y, rx_time: float | None = None):
+    def _publish_gps(self, x, y, rx_time: float | None = None, covariance_xy: float | None = None):
         if self._ros_node is None or self._gps_pub is None or PoseWithCovarianceStamped is None:
             return
         # period 체크는 수신 시각 기준으로 → drain 한 번에 여러 패킷이 쌓여도 모두 publish 가능
@@ -1275,10 +1351,11 @@ class threadTrafficDataCollector(ThreadWithStop):
         if self._gps_min_publish_period > 0.0 and (check_time - self._last_gps_publish) < self._gps_min_publish_period:
             return
         msg = PoseWithCovarianceStamped()
-        # rx_time이 있으면 TCP 수신 시각을 타임스탬프로 사용, 없으면 현재 ROS 시간
+        # rx_time이 있으면 UWB 측정 지연을 보정한 시각을 타임스탬프로 사용, 없으면 현재 ROS 시간
         if rx_time is not None:
-            sec = int(rx_time)
-            nanosec = int((rx_time - sec) * 1e9)
+            adjusted_time = rx_time - self._uwb_measurement_delay
+            sec = int(adjusted_time)
+            nanosec = int((adjusted_time - sec) * 1e9)
             msg.header.stamp.sec = sec
             msg.header.stamp.nanosec = nanosec
         else:
@@ -1291,6 +1368,16 @@ class threadTrafficDataCollector(ThreadWithStop):
         msg.pose.pose.orientation.y = 0.0
         msg.pose.pose.orientation.z = 0.0
         msg.pose.pose.orientation.w = 1.0
+        cov = [0.0] * 36
+        # covariance 없으면 서버 location 기본값 사용 (sigma=0.15m)
+        var_xy = float(covariance_xy) if covariance_xy is not None else 0.0225
+        cov[0]  = var_xy   # x
+        cov[7]  = var_xy   # y
+        cov[14] = 999.0    # z (UWB 미측정)
+        cov[21] = 999.0    # roll (UWB 미측정)
+        cov[28] = 999.0    # pitch (UWB 미측정)
+        cov[35] = 999.0    # yaw (UWB 미측정)
+        msg.pose.covariance = cov
         self._gps_pub.publish(msg)
         self._last_gps_publish = check_time
 
@@ -1376,6 +1463,92 @@ class threadTrafficDataCollector(ThreadWithStop):
 
 ##########################################################
 
+class threadUWBSerial(ThreadWithStop):
+    """UWB 로컬라이제이션 장치에서 USB serial로 위치 데이터를 읽어 uwb_queue에 넣는 스레드.
+
+    장치 출력 포맷: {"x":float, "y":float, "z":float, "quality":int}
+    quality → covariance 변환: sigma = 0.05 + (1 - quality/100) * 0.35
+    """
+
+    def __init__(self, uwb_queue):
+        super(threadUWBSerial, self).__init__(pause=0)
+        self._uwb_queue = uwb_queue
+        self._port = os.getenv("UWB_SERIAL_PORT", "/dev/ttyUSB0")
+        self._baud = int(os.getenv("UWB_SERIAL_BAUD", "115200"))
+        self._quality_threshold = int(os.getenv("UWB_SERIAL_QUALITY_THRESHOLD", "30"))
+        self._ser = None
+        self._next_retry = 0.0
+
+    def thread_work(self):
+        if self._ser is None:
+            now = time.monotonic()
+            if now < self._next_retry:
+                self._blocker.wait(0.5)
+                return
+            self._try_connect()
+            return
+
+        try:
+            raw = self._ser.readline()
+            rx_time = time.time()
+            if raw:
+                self._parse_and_enqueue(raw, rx_time)
+        except Exception:
+            self._close_serial()
+
+    def _try_connect(self):
+        try:
+            import serial as _serial
+            self._ser = _serial.Serial(self._port, self._baud, timeout=1.0)
+            print(
+                f"\033[1;97m[ UWB Serial ] :\033[0m "
+                f"\033[1;92mINFO\033[0m - Opened {self._port} at {self._baud} baud"
+            )
+        except Exception as e:
+            print(
+                f"\033[1;97m[ UWB Serial ] :\033[0m "
+                f"\033[1;91mERROR\033[0m - Failed to open {self._port}: {e}"
+            )
+            self._ser = None
+            self._next_retry = time.monotonic() + 3.0
+
+    def _close_serial(self):
+        if self._ser is not None:
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+            self._ser = None
+        self._next_retry = time.monotonic() + 3.0
+
+    def _parse_and_enqueue(self, raw, rx_time):
+        try:
+            data = json.loads(raw.decode("utf-8", errors="ignore").strip())
+        except (json.JSONDecodeError, ValueError):
+            return
+
+        x = data.get("x")
+        y = data.get("y")
+        quality = int(data.get("quality", 0))
+
+        if x is None or y is None:
+            return
+        if quality < self._quality_threshold:
+            return
+
+        # quality 100 → sigma=0.05m, quality 0 → sigma=0.40m
+        sigma = 0.05 + (1.0 - quality / 100.0) * 0.35
+        covariance_xy = sigma ** 2
+
+        self._uwb_queue.put((float(x), float(y), covariance_xy, rx_time))
+
+    def stop(self):
+        self._close_serial()
+        super(threadUWBSerial, self).stop()
+
+
+##########################################################
+
 class processTrafficCommunication(WorkerProcess):
     """This process receives the location of the car and sends it to the processGateway.
     
@@ -1391,7 +1564,7 @@ class processTrafficCommunication(WorkerProcess):
         self.queuesList = queueList
         self.logging = logging
         self.shared_memory = sharedMem()
-        self.filename = "src/data/TrafficCommunication/useful/publickey_server_test.pem"
+        self.filename = "src/data/TrafficCommunication/useful/publickey_server.pem"
         self.deviceID = deviceID
         self.frequency = frequency
         self.debugging = debugging
@@ -1401,13 +1574,21 @@ class processTrafficCommunication(WorkerProcess):
     def _init_threads(self):
         """Create the Traffic Communication thread and add it to the list of threads."""
 
+        uwb_queue = queue.SimpleQueue()
+
         TrafficDataCollectorTh = threadTrafficDataCollector(
-            self.shared_memory, self.queuesList, self.logging, self.debugging
+            self.shared_memory, self.queuesList, self.logging, self.debugging,
+            uwb_queue=uwb_queue, device_id=self.deviceID,
         )
         self.threads.append(TrafficDataCollectorTh)
 
+        uwb_enabled = os.getenv("UWB_SERIAL_ENABLE", "0").lower() in ("1", "true", "yes", "y")
+        if uwb_enabled:
+            UWBSerialTh = threadUWBSerial(uwb_queue)
+            self.threads.append(UWBSerialTh)
+
         # Legacy BFMC traffic-com stack (UDP discovery + Twisted TCP) can be enabled explicitly.
-        legacy_enabled = os.getenv("TRAFFIC_LEGACY_ENABLE", "0").lower() in ("1", "true", "yes", "y")
+        legacy_enabled = os.getenv("TRAFFIC_LEGACY_ENABLE", TRAFFIC_LEGACY_ENABLE_DEFAULT).lower() in ("1", "true", "yes", "y")
         if legacy_enabled and threadTrafficCommunication is not None:
             TrafficComTh = threadTrafficCommunication(
                 self.shared_memory, self.queuesList, self.deviceID, self.frequency, self.filename

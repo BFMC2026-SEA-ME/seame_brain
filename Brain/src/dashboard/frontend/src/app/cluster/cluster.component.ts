@@ -26,7 +26,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import { Component, Input, ViewChild } from '@angular/core';
+import { Component, Input, Output, EventEmitter, ViewChild } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { WebSocketService} from '../webSocket/web-socket.service'
 
@@ -61,6 +61,7 @@ export class ClusterComponent {
   @Input() carPosition: number = 0;
   @Input() carLeftLaneOn: boolean = false;
   @Input() carRightLaneOn: boolean = false;
+  @Output() passedCheckpointCountChange = new EventEmitter<number>();
 
   @ViewChild(WarningLightComponent) warningLightComponent!: WarningLightComponent;
   @ViewChild(StateSwitchComponent) stateSwitchComponent!: StateSwitchComponent;
@@ -159,6 +160,10 @@ export class ClusterComponent {
     this.clusterService.updateKL('0');
   }
   
+  onPassedCheckpointCountChange(count: number): void {
+    this.passedCheckpointCountChange.emit(count);
+  }
+
   setWarningLightType(type: string): void {
     this.warningLightType = type;
     

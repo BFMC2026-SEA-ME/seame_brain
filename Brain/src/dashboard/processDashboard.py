@@ -35,6 +35,8 @@ import json
 import inspect
 import eventlet
 import os
+import re
+import subprocess
 import time
 import glob
 from queue import Empty
@@ -51,6 +53,7 @@ from src.utils.messages.messageHandlerSender import messageHandlerSender
 from src.templates.workerprocess import WorkerProcess
 from src.utils.messages.allMessages import Semaphores
 from src.statemachine.stateMachine import StateMachine
+from src.statemachine.systemMode import SystemMode
 from src.dashboard.components.calibration import Calibration
 from src.dashboard.components.ip_manger import IpManager
 
@@ -273,6 +276,8 @@ class processDashboard(WorkerProcess):
     def _start_background_tasks(self):
         """Start background monitoring tasks."""
         psutil.cpu_percent(interval=1, percpu=False) # warm up
+        self._net_prev_counters = psutil.net_io_counters(pernic=True).get("wlan0")
+        self._net_prev_time = time.monotonic()
 
         eventlet.spawn(self.update_hardware_data)
         eventlet.spawn(self.send_continuous_messages)
@@ -440,6 +445,11 @@ class processDashboard(WorkerProcess):
         """Handle getting the current serial connection state."""
         self.socketio.emit('current_serial_connection_state', {'data': self.serialConnected}, room=socketId)
 
+    def _should_safety_stop_on_dashboard_loss(self) -> bool:
+        """AUTO 모드에서는 대시보드 연결 손실로 차량을 멈추지 않음.
+        AckermannBridge → Nucleo 경로는 로컬이므로 네트워크와 무관."""
+        return self.stateMachine.get_mode() != SystemMode.AUTO
+
     def _trigger_safety_stop(self, reason: str = "disconnect"):
         """Force a safe stop on the vehicle when control link is lost."""
         try:
@@ -486,7 +496,13 @@ class processDashboard(WorkerProcess):
         self.connectedClients.discard(socketId)
         self._sync_camera_stream_state()
         if self.sessionActive and self.activeUser == socketId:
-            self._trigger_safety_stop("socket disconnect")
+            if self._should_safety_stop_on_dashboard_loss():
+                self._trigger_safety_stop("socket disconnect")
+            else:
+                print(
+                    f"\033[1;97m[ Dashboard ] :\033[0m "
+                    f"\033[1;92mINFO\033[0m - Socket disconnected in AUTO mode, skipping safety stop"
+                )
             self.sessionActive = False
             self.activeUser = None
 
@@ -555,7 +571,13 @@ class processDashboard(WorkerProcess):
                     self.socketio.emit('heartbeat', {'data': 'Heartbeat'})
                 else:
                     print(f"\033[1;97m[ Dashboard ] :\033[0m \033[1;93mWARNING\033[0m - Connection lost with peer \033[94m{self.activeUser}\033[0m")
-                    self._trigger_safety_stop("heartbeat timeout")
+                    if self._should_safety_stop_on_dashboard_loss():
+                        self._trigger_safety_stop("heartbeat timeout")
+                    else:
+                        print(
+                            f"\033[1;97m[ Dashboard ] :\033[0m "
+                            f"\033[1;92mINFO\033[0m - Heartbeat timeout in AUTO mode, skipping safety stop"
+                        )
                     self.socketio.emit('heartbeat_disconnect', {'data': 'Heartbeat timeout'})
                     self.sessionActive = False
                     self.activeUser = None
@@ -618,6 +640,7 @@ class processDashboard(WorkerProcess):
                     self.socketio.emit("serialCamera", {"value": payload}, **emit_kwargs)
                 self._camera_frame_dirty = False
                 self._last_camera_emit = now
+                eventlet.sleep(0)  # emit 후 다른 greenlet에 제어권 양보
         except Exception as exc:
             self.logger.error(f"send_camera_messages failed: {exc}")
         finally:
@@ -696,6 +719,38 @@ class processDashboard(WorkerProcess):
         self._last_semaphore_emit = now
 
 
+    def _get_network_stats(self):
+        """Return WiFi RSSI (dBm) and network throughput (KB/s rx, tx)."""
+        # WiFi RSSI via iw
+        rssi = None
+        try:
+            result = subprocess.run(
+                ["iw", "dev", "wlan0", "link"],
+                capture_output=True, text=True, timeout=1
+            )
+            match = re.search(r'signal:\s*(-?\d+)', result.stdout)
+            if match:
+                rssi = int(match.group(1))
+        except Exception:
+            pass
+
+        # wlan0 throughput only
+        rx_kbps, tx_kbps = 0.0, 0.0
+        try:
+            now = time.monotonic()
+            cur = psutil.net_io_counters(pernic=True).get("wlan0")
+            if cur is not None and self._net_prev_counters is not None:
+                dt = now - self._net_prev_time
+                if dt > 0:
+                    rx_kbps = (cur.bytes_recv - self._net_prev_counters.bytes_recv) / dt / 1024
+                    tx_kbps = (cur.bytes_sent - self._net_prev_counters.bytes_sent) / dt / 1024
+            self._net_prev_counters = cur
+            self._net_prev_time = now
+        except Exception:
+            pass
+
+        return rssi, round(rx_kbps, 1), round(tx_kbps, 1)
+
     def send_hardware_data_to_frontend(self):
         """Send hardware monitoring data to the frontend."""
         if not self.running:
@@ -706,6 +761,14 @@ class processDashboard(WorkerProcess):
                 'data': {
                     'usage': self.cpuCoreUsage,
                     'temp': self.cpuTemperature
+                }
+            })
+            rssi, rx_kbps, tx_kbps = self._get_network_stats()
+            self.socketio.emit('NetworkStats', {
+                'data': {
+                    'rssi': rssi,
+                    'rx_kbps': rx_kbps,
+                    'tx_kbps': tx_kbps,
                 }
             })
         except Exception as exc:

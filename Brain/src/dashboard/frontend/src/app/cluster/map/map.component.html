@@ -30,7 +30,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
   <div class="map-track-container">
     <div #imageContainer id="map-track-image-container">
       <svg #overlayElement id="map-track-overlay" viewBox="28 18 704 546" preserveAspectRatio="xMidYMid meet">
-        <image href="/assets/lab_track.png" x="0" y="0" width="772" height="600" class="map-image" />
+        <image href="/assets/Track.svg" x="0" y="43" width="772" height="514" class="map-image" />
         <rect class="map-frame" x="28.5" y="18.5" width="703" height="545"></rect>
         <g
           *ngIf="currentPoseSvg"
@@ -56,10 +56,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. -->
               r="8"
             ></circle>
             <circle
+              *ngIf="isTargetCheckpointNode(node.id)"
+              class="checkpoint-target-ring"
+              [attr.cx]="node.xSvg"
+              [attr.cy]="node.ySvg"
+              r="10"
+            ></circle>
+            <circle
               class="map-node"
               [class.current]="node.id === currentPoseNodeId"
               [class.checkpoint-pending]="!isPassedCheckpointNode(node.id)"
               [class.checkpoint-passed]="isPassedCheckpointNode(node.id)"
+              [class.checkpoint-target]="isTargetCheckpointNode(node.id)"
               [attr.cx]="node.xSvg"
               [attr.cy]="node.ySvg"
               r="6"

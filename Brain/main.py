@@ -54,6 +54,8 @@ ENABLE_CMDVELBRIDGE = False
 ENABLE_ACKERMAN = True
 ENABLE_GLOBAL_PLANNING_BRIDGE = True
 
+DEVICE_ID = int(os.getenv("TRAFFIC_GPS_CAR_ID", "5")) # gps 박스 아이디 
+
 # Pin to CPU cores 0–3
 # 프로세르를 모든 cpu 코어에 고정
 try:
@@ -144,6 +146,7 @@ queueList = {
     "Critical": Queue(),
     "Warning": Queue(),
     "General": Queue(),
+    "Dashboard": Queue(maxsize=4),
     "Config": Queue(),
     "Image": Queue(maxsize=1),
 }
@@ -190,7 +193,7 @@ else:
 # Initializing GPS
 traffic_com_ready = Event()
 if ENABLE_TRAFFIC_COM:
-    processTrafficCom = processTrafficCommunication(queueList, logging, 3, traffic_com_ready, debugging = False)
+    processTrafficCom = processTrafficCommunication(queueList, logging, DEVICE_ID, traffic_com_ready, debugging = False)
 else:
     processTrafficCom = None
 
@@ -285,7 +288,7 @@ try:
             modeDictTrafficCom["enabled"] = True
 
         processSemaphore = manage_process_life(processSemaphores, processSemaphore, [queueList, logging, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
-        processTrafficCom = manage_process_life(processTrafficCommunication, processTrafficCom, [queueList, logging, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
+        processTrafficCom = manage_process_life(processTrafficCommunication, processTrafficCom, [queueList, logging, DEVICE_ID, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
         processDashboard = manage_process_life(ProcessDashboardClass, processDashboard, [queueList, logging, dashboard_ready, False], ENABLE_DASHBOARD, allProcesses)
 
         blocker.wait(0.1) # 0.1초 간격으로 루프를 텀핑 

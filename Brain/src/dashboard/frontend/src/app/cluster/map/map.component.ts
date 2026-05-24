@@ -26,7 +26,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import { Component, Input, ViewChild, ElementRef } from '@angular/core';
+import { Component, Input, Output, EventEmitter, ViewChild, ElementRef } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { WebSocketService} from '../../webSocket/web-socket.service'
 
@@ -55,6 +55,7 @@ interface MapNode {
 })
 export class MapComponent {
   @Input() cursorRotation: number = 0;
+  @Output() passedCheckpointCountChange = new EventEmitter<number>();
 
   @ViewChild('imageContainer') imageContainerRef!: ElementRef<HTMLImageElement>;
   @ViewChild('overlayElement') overlayElementRef!: ElementRef<SVGElement>;
@@ -63,19 +64,22 @@ export class MapComponent {
   private mapY: number = 0;
   private enableMapPan: boolean = false;
   private readonly mapImageWidth = 772;
-  private readonly mapImageHeight = 600;
+  private readonly mapImageHeight = 514;
   private readonly mapImageBounds = {
-    minX: 28,
-    minY: 18,
-    maxX: 732,
-    maxY: 564
+    minX: 0,
+    minY: 32,
+    maxX: 772,
+    maxY: 557
   };
-  private readonly mapFitPaddingRatio = 0.06;
+  private readonly mapFitPaddingRatio = 0.0;
+  // Full track physical dimensions in meters (Track.svg: 20696mm × 13786mm).
+  private readonly mapPhysicalWidth = 20.696;
+  private readonly mapPhysicalHeight = 14.15;
   // Expand node spacing around map center to better match track geometry.
-  private readonly nodeSpreadScaleX = 1.07;
-  private readonly nodeSpreadScaleY = 1.01;
+  private readonly nodeSpreadScaleX = 1.0;
+  private readonly nodeSpreadScaleY = 1.0;
   // Fine vertical alignment (positive value moves nodes downward).
-  private readonly nodeOffsetSvgY = 20.0;
+  private readonly nodeOffsetSvgY = 0.0;
 
   private screenSize = {"width": 100, "height": 100}; // screen size in %
   private mapSize: number = 50; // map size in % for width
@@ -96,19 +100,23 @@ export class MapComponent {
   public currentPoseNodeId: string | null = null;
   // Change this path to use a different vehicle marker image.
   public currentPoseImagePath: string = '/assets/Car_top.png';
-  public currentPoseImageWidth: number = 26;
-  public currentPoseImageHeight: number = 26;
+  public currentPoseImageWidth: number = 14;
+  public currentPoseImageHeight: number = 14;
   public checkpointNodeIds: Set<string> = new Set([
-    '11', '25', '33', '39', '46', '60', '73', '76',
-    '156', '103', '130', '117', '140', '90', '81', '150'
+    '75','116','127','121','185','71','27','29','31','25','198','42','8','301','93','80',
+    '82','419','403','399','343','385','362','368','317','318','56','54',
+    '261','239','225','228','288','158','171','436','425'
   ]);
   public passedCheckpointNodeIds: Set<string> = new Set<string>();
+  public orderedCheckpoints: string[] = [];
+  public targetCheckpointNodeId: string | null = null;
 
   private graphBounds: { min_x: number; max_x: number; min_y: number; max_y: number } | null = null;
   private currentPoseGraph: { x: number; y: number } | null = null;
 
   private locationSubscription: Subscription | undefined;
   private semaphoresAndCarsSubscription: Subscription | undefined;
+  private orderedCheckpointsSubscription: Subscription | undefined;
   private lastPoseUpdateMs: number = 0;
   private readonly poseUpdatePeriodMs: number = 66;
 
@@ -171,6 +179,16 @@ export class MapComponent {
       },
     );
 
+    this.orderedCheckpointsSubscription = this.webSocketService.receiveOrderedCheckpoints().subscribe(
+      (message) => {
+        const payload = (message as any)?.value ?? message;
+        if (Array.isArray(payload)) {
+          this.orderedCheckpoints = payload.map(String);
+          this.updateTargetCheckpoint();
+        }
+      },
+    );
+
     void this.loadMapNodes();
     this.updateMap()
   }
@@ -181,6 +199,9 @@ export class MapComponent {
     }
     if (this.semaphoresAndCarsSubscription) {
       this.semaphoresAndCarsSubscription.unsubscribe();
+    }
+    if (this.orderedCheckpointsSubscription) {
+      this.orderedCheckpointsSubscription.unsubscribe();
     }
   }
 
@@ -320,17 +341,9 @@ export class MapComponent {
     const maxY = this.mapImageBounds.maxY - padY;
     const fitSpanX = Math.max(0.0001, maxX - minX);
     const fitSpanY = Math.max(0.0001, maxY - minY);
-    let nx: number;
-    let ny: number;
-    if (!this.graphBounds) {
-      nx = x / 20.67;
-      ny = 1 - (y / 13.76);
-    } else {
-      const spanX = Math.max(0.0001, this.graphBounds.max_x - this.graphBounds.min_x);
-      const spanY = Math.max(0.0001, this.graphBounds.max_y - this.graphBounds.min_y);
-      nx = (x - this.graphBounds.min_x) / spanX;
-      ny = 1 - ((y - this.graphBounds.min_y) / spanY);
-    }
+    // Use absolute physical dimensions to align nodes with the track image.
+    let nx = x / this.mapPhysicalWidth;
+    let ny = 1 - (y / this.mapPhysicalHeight);
 
     // Apply center-based spread scaling so spacing between nodes increases.
     nx = (nx - 0.5) * this.nodeSpreadScaleX + 0.5;
@@ -377,7 +390,26 @@ export class MapComponent {
     }
     const key = String(nodeId);
     if (this.checkpointNodeIds.has(key)) {
+      const before = this.passedCheckpointNodeIds.size;
       this.passedCheckpointNodeIds.add(key);
+      this.updateTargetCheckpoint();
+      if (this.passedCheckpointNodeIds.size !== before) {
+        this.passedCheckpointCountChange.emit(this.passedCheckpointNodeIds.size);
+      }
     }
+  }
+
+  private updateTargetCheckpoint(): void {
+    for (const id of this.orderedCheckpoints) {
+      if (this.isCheckpointNode(id) && !this.isPassedCheckpointNode(id)) {
+        this.targetCheckpointNodeId = id;
+        return;
+      }
+    }
+    this.targetCheckpointNodeId = null;
+  }
+
+  public isTargetCheckpointNode(nodeId: string): boolean {
+    return this.targetCheckpointNodeId === String(nodeId);
   }
 }

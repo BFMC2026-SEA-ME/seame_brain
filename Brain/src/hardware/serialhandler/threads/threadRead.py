@@ -103,10 +103,9 @@ class threadRead(ThreadWithStop):
         self.last_error_time = None
         self.error_cooldown = timedelta(seconds=3)
 
-        # NUCLEO watchdog: NUCLEO 펌웨어 hang 감지
-        # 데이터가 SERIAL_WATCHDOG_TIMEOUT 초 이상 없으면 disconnect 신호 발생
-        self._last_nucleo_data_time = None
+        # NUCLEO watchdog
         self._watchdog_timeout = float(os.getenv("SERIAL_WATCHDOG_TIMEOUT", "5.0"))
+        self._last_nucleo_data_time = None
         self._watchdog_fired = False
 
         self._queue_timer = None
@@ -160,11 +159,14 @@ class threadRead(ThreadWithStop):
 
         # Wheel encoder scaling (velocity/distance). 기본값 1.0 = 보정 없음
         # 예) 실제 1.0m / 측정 0.972m => WHEEL_DIST_SCALE=1.028
-        self._wheel_dist_scale = self._read_float_env("WHEEL_DIST_SCALE", 0.981)
-        self._wheel_vel_scale = self._read_float_env("WHEEL_VEL_SCALE", 0.981)
+        self._wheel_dist_scale = self._read_float_env("WHEEL_DIST_SCALE", 1.048)
+        self._wheel_vel_scale = self._read_float_env("WHEEL_VEL_SCALE", 1.048)
         # 누적거리 오프셋 보정 (필요 시)
         self._wheel_dist_bias = self._read_float_env("WHEEL_DIST_BIAS", 0.0)
 
+        # vy variance: 아커만 차량은 lateral slip 없으므로 vy≈0이 강한 제약.
+        # sigma_vy=0.05 m/s → var=0.0025. vz/vroll/vpitch/vyaw는 크게 유지.
+        self._wheel_vy_var = self._read_float_env("WHEEL_VY_VAR", 0.0025)
         # >>> FIX: unused dimensions' variance (make covariance invertible & "ignored")
         # vy/vz/vroll/vpitch/vyaw variance. 아주 크게 주면 EKF가 사실상 안 믿음.
         self._wheel_other_var = self._read_float_env("WHEEL_OTHER_VAR", 1e3)
@@ -186,6 +188,9 @@ class threadRead(ThreadWithStop):
         if self._ros_shutdown_requested:
             return False
         if self._ros_node is not None and self._imu_pub is not None:
+            if rclpy is not None and not rclpy.ok():
+                self._ros_shutdown_requested = True
+                return False
             return True
 
         if rclpy is None or Imu is None:
@@ -280,6 +285,7 @@ class threadRead(ThreadWithStop):
             return ros_now
 
     def _shutdown_ros(self):
+        self._ros_shutdown_requested = True
         if self._ros_node is None:
             return
         try:
@@ -330,12 +336,10 @@ class threadRead(ThreadWithStop):
 
             magx = magy = magz = None
             quat = None
-            cov = None
-            if len(parts) >= 32:
+            if len(parts) >= 23:
                 magx = float(parts[16]); magy = float(parts[17]); magz = float(parts[18])
                 qx = float(parts[19]); qy = float(parts[20]); qz = float(parts[21]); qw = float(parts[22])
                 quat = (qx, qy, qz, qw)
-                cov = [float(v) for v in parts[23:32]]
 
             return {
                 "ts_us": ts_us,
@@ -346,7 +350,7 @@ class threadRead(ThreadWithStop):
                 "encoder": (rpm, velocity, distance),
                 "mag": (magx, magy, magz),
                 "quat": quat,
-                "cov": cov,
+                "cov": None,
             }
         except ValueError:
             return None
@@ -454,8 +458,8 @@ class threadRead(ThreadWithStop):
 
         cov = [0.0] * 36
         # diagonal indices in 6x6 => 0, 7, 14, 21, 28, 35
-        cov[0]  = var_vx     # vx
-        cov[7]  = other_var  # vy
+        cov[0]  = var_vx                        # vx
+        cov[7]  = float(self._wheel_vy_var)    # vy (아커만 vy≈0 제약)
         cov[14] = other_var  # vz
         cov[21] = other_var  # vroll
         cov[28] = other_var  # vpitch
@@ -543,11 +547,12 @@ class threadRead(ThreadWithStop):
         )
 
         try:
-            if self._ros_shutdown_requested:
+            if self._ros_shutdown_requested or not rclpy.ok():
                 return
             self._imu_pub.publish(msg)
         except Exception as exc:
             print(f"[SerialHandler] ROS2 IMU publish failed: {exc}")
+            self._ros_shutdown_requested = True
 
     def _publish_wheel_encoder_and_twist(self, values, stamp=None):
         """
@@ -574,11 +579,12 @@ class threadRead(ThreadWithStop):
             msg.vector.y = float(velocity)
             msg.vector.z = float(distance)
             try:
-                if self._ros_shutdown_requested:
+                if self._ros_shutdown_requested or not rclpy.ok():
                     return
                 self._wheel_pub.publish(msg)
             except Exception as exc:
                 print(f"[SerialHandler] ROS2 wheel_encoder publish failed: {exc}")
+                self._ros_shutdown_requested = True
 
         # 2) NEW /wheel_twist
         if self._wheel_twist_pub is not None and TwistWithCovarianceStamped is not None:
@@ -600,11 +606,12 @@ class threadRead(ThreadWithStop):
             tmsg.twist.covariance = self._wheel_twist_cov36()
 
             try:
-                if self._ros_shutdown_requested:
+                if self._ros_shutdown_requested or not rclpy.ok():
                     return
                 self._wheel_twist_pub.publish(tmsg)
             except Exception as exc:
                 print(f"[SerialHandler] ROS2 wheel_twist publish failed: {exc}")
+                self._ros_shutdown_requested = True
 
     # ---------------- Message handlers ----------------
     def _should_publish_ros_sample(self):
@@ -662,6 +669,12 @@ class threadRead(ThreadWithStop):
         self._watchdog_fired = False
 
     # ====================================== RUN ==========================================
+    def run(self):
+        try:
+            super(threadRead, self).run()
+        finally:
+            self._shutdown_ros()
+
     def thread_work(self):
         try:
             if not self._ros_init_attempted:
@@ -923,4 +936,3 @@ class threadRead(ThreadWithStop):
                 pass
             self._queue_timer = None
         super(threadRead, self).stop()
-        self._shutdown_ros()

@@ -27,6 +27,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
 
 import json
+import time
 from threading import Event
 from src.utils.messages.allMessages import Location
 from src.utils.messages.messageHandlerSender import messageHandlerSender
@@ -37,6 +38,7 @@ class tcpClient(protocol.ClientFactory):
     def __init__(self, connectionBrokenCllbck, locsysID, locsysFrequency, queue):
         self.connectiondata = None
         self.connection = None
+        self._last_send_skip_log = 0.0
         self.retry_delay = 1
         self.connectionBrokenCllbck = connectionBrokenCllbck
         self.locsysID = locsysID
@@ -64,12 +66,31 @@ class tcpClient(protocol.ClientFactory):
         conn.factory = self
         return conn
 
+    def is_connected(self):
+        return self.connection is not None
+
     def send_data_to_server(self, message):
-        self.connection.send_data(message) # type: ignore
+        if self.connection is None:
+            now = time.monotonic()
+            if now - self._last_send_skip_log > 2.0:
+                print("\033[1;97m[ Traffic Communication ] :\033[0m \033[1;93mWARNING\033[0m - Skipping send while TCP server is disconnected")
+                self._last_send_skip_log = now
+            return False
+        try:
+            self.connection.send_data(message) # type: ignore
+            return True
+        except Exception as exc:
+            print(f"\033[1;97m[ Traffic Communication ] :\033[0m \033[1;93mWARNING\033[0m - Failed to send data to server: {exc}")
+            return False
 
 
 # One class is generated for each new connection
 class SingleConnection(protocol.Protocol):
+    def __init__(self):
+        self._rx_buffer = ""
+        self._json_decoder = json.JSONDecoder()
+        self._max_rx_buffer = 65536
+
     def connectionMade(self):
         peer = self.transport.getPeer() # type: ignore
         self.factory.connectiondata = peer.host + ":" + str(peer.port) # type: ignore
@@ -78,25 +99,76 @@ class SingleConnection(protocol.Protocol):
         print(f"\033[1;97m[ Traffic Communication ] :\033[0m \033[1;92mINFO\033[0m - Connected to server \033[94m{self.factory.connectiondata}\033[0m") # type: ignore
 
     def dataReceived(self, data):
-        dat = data.decode()
-        tmp_data = dat.replace("}{","}}{{")
-        if tmp_data != dat:
-            tmp_dat = tmp_data.split("}{")
-            dat = tmp_dat[-1]
-        da = json.loads(dat)
+        self._rx_buffer += data.decode("utf-8", errors="replace")
+        if len(self._rx_buffer) > self._max_rx_buffer:
+            self._rx_buffer = self._rx_buffer[-self._max_rx_buffer:]
 
-        if da["type"] == "location":
+        for payload in self._pop_json_messages():
+            self._handle_payload(payload)
+
+    def _pop_json_messages(self):
+        messages = []
+        while self._rx_buffer:
+            self._rx_buffer = self._rx_buffer.lstrip()
+            if not self._rx_buffer:
+                break
+
+            start = self._find_json_start(self._rx_buffer)
+            if start < 0:
+                self._log_discarded_rx(self._rx_buffer)
+                self._rx_buffer = ""
+                break
+            if start > 0:
+                self._log_discarded_rx(self._rx_buffer[:start])
+                self._rx_buffer = self._rx_buffer[start:]
+
+            try:
+                payload, end = self._json_decoder.raw_decode(self._rx_buffer)
+            except json.JSONDecodeError as exc:
+                if self._is_incomplete_json_error(exc):
+                    break
+                self._log_discarded_rx(self._rx_buffer[: max(exc.pos + 1, 1)])
+                self._rx_buffer = self._rx_buffer[max(exc.pos + 1, 1):]
+                continue
+
+            messages.append(payload)
+            self._rx_buffer = self._rx_buffer[end:]
+        return messages
+
+    def _find_json_start(self, text):
+        starts = [pos for pos in (text.find("{"), text.find("[")) if pos >= 0]
+        return min(starts) if starts else -1
+
+    def _is_incomplete_json_error(self, exc):
+        return exc.pos >= len(self._rx_buffer) - 1 or "Unterminated string" in exc.msg
+
+    def _log_discarded_rx(self, text):
+        preview = text.replace("\n", "\\n").replace("\r", "\\r")[:80]
+        if preview:
+            print(f"\033[1;97m[ Traffic Communication ] :\033[0m \033[1;93mWARNING\033[0m - Discarding non-JSON TCP data: {preview}")
+
+    def _handle_payload(self, da):
+        if isinstance(da, list):
+            for item in da:
+                self._handle_payload(item)
+            return
+        if not isinstance(da, dict):
+            print(f"\033[1;97m[ Traffic Communication ] :\033[0m \033[1;93mWARNING\033[0m - Ignoring non-dict TCP payload: {da}")
+            return
+
+        if da.get("type") == "location":
             da["id"] = self.factory.locsysID # type: ignore
-            # fixed infinite loop on hooks (hopefully)
+            da["_rx_time"] = time.time()  # TCP 수신 시각 기록
             self.factory.sendLocation.send(da) # type: ignore
         else:
             print(f"\033[1;97m[ Traffic Communication ] :\033[0m \033[1;92mINFO\033[0m - Message from server \033[94m{self.factory.connectiondata}\033[0m") # type: ignore
+
     def send_data(self, message):
         msg = json.dumps(message)
         self.transport.write(msg.encode()) # type: ignore
-    
+
     def subscribeToLocaitonData(self, id, frequency):
-        # Sends the id you wish to subscribe to and the frequency you want to receive data. Frequency must be between 0.1 and 5. 
+        # Sends the id you wish to subscribe to and the frequency you want to receive data. Frequency must be between 0.1 and 5.
         msg = {
             "reqORinfo": "info",
             "type": "locIDsub",
@@ -104,9 +176,9 @@ class SingleConnection(protocol.Protocol):
             "freq": frequency,
         }
         self.send_data(msg)
-    
+
     def unSubscribeToLocaitonData(self, id, frequency):
-        # Unsubscribes from locaiton data. 
+        # Unsubscribes from locaiton data.
         msg = {
             "reqORinfo": "info",
             "type": "locIDubsub",
