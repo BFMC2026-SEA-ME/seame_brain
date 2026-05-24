@@ -1,36 +1,36 @@
 # SEA:ME BFMC Dashboard
 
-SEA:ME 팀의 BFMC 자율주행 차량용 대시보드입니다. 이 프로젝트는 BFMC 공식 Brain 프로젝트를 기반으로 SEA:ME 차량 구조, ROS2 파이프라인, Jetson 실행 환경에 맞게 커스터마이징했습니다.
+This repository contains the SEA:ME team's dashboard for the BFMC autonomous vehicle. It is customized from the official BFMC Brain project to fit the SEA:ME vehicle architecture, ROS2 pipeline, and Jetson runtime environment.
 
-- 원본 BFMC Brain 저장소: https://github.com/ECC-BFMC/Brain
-- 원본 프로젝트는 Raspberry Pi 기반 차량 제어, Nucleo 통신, 센서 데이터 처리, 환경 서버 API, 시뮬레이션 서버 코드를 포함합니다.
-- 본 저장소는 위 구조를 유지하면서 SEA:ME 팀의 대시보드와 ROS2 연동 기능을 추가했습니다.
+- Original BFMC Brain repository: https://github.com/ECC-BFMC/Brain
+- The original project provides Raspberry Pi-based vehicle control, Nucleo communication, sensor data handling, environmental server APIs, and simulated servers.
+- This repository keeps the original BFMC Brain structure while adding SEA:ME-specific dashboard and ROS2 integration features.
 
-## 주요 변경 사항
+## Key Changes
 
-- `Brain/main.py` 기준으로 대시보드, 카메라, 신호등/Traffic 서버 통신, Serial Handler, Ackermann bridge, Global Planning bridge를 함께 실행하도록 구성했습니다.
-- ROS2 RealSense compressed image 토픽을 구독해 대시보드의 live camera 화면으로 전달합니다.
-- `/ackermann_cmd`를 BFMC Serial Handler가 사용하는 speed/steer 명령으로 변환하는 Ackermann bridge를 추가했습니다.
-- Global Planning goal node, global path, global pose, ordered checkpoints를 ROS2와 대시보드 사이에서 주고받도록 bridge를 추가했습니다.
-- 지도 GraphML node, traffic light/semaphore 상태, 차량 pose를 대시보드 map UI에 표시할 수 있도록 API와 WebSocket 흐름을 확장했습니다.
-- Jetson CPU temperature, CPU/memory/network 상태 등 차량 컴퓨터 모니터링 정보를 대시보드에서 확인할 수 있도록 보강했습니다.
+- `Brain/main.py` starts the dashboard, camera, semaphore/traffic communication, serial handler, Ackermann bridge, and global planning bridge together.
+- Added a ROS2 RealSense compressed image subscriber that forwards camera frames to the dashboard live camera view.
+- Added an Ackermann bridge that converts `/ackermann_cmd` messages into speed/steer commands used by the BFMC serial handler.
+- Added a global planning bridge for goal node IDs, global paths, global poses, and ordered checkpoints between ROS2 and the dashboard.
+- Extended the dashboard API and WebSocket flow to display GraphML map nodes, traffic light/semaphore states, and vehicle pose on the map UI.
+- Added vehicle computer monitoring data such as Jetson CPU temperature, CPU usage, memory usage, and network status.
 
-## 실행 준비
+## Setup
 
-기본 실행 위치는 `Brain` 디렉터리입니다.
+Run commands from the `Brain` directory.
 
 ```bash
 cd Brain
 ```
 
-설치 스크립트를 사용할 경우:
+To use the setup script:
 
 ```bash
 chmod +x setup.sh
 ./setup.sh
 ```
 
-수동으로 설치할 경우:
+For manual installation:
 
 ```bash
 python3 -m venv .venv
@@ -43,18 +43,18 @@ npm install
 cd ../../..
 ```
 
-ROS2 bridge 기능을 켜서 실행하려면 ROS2 환경과 메시지 패키지가 먼저 준비되어 있어야 합니다. 특히 `main.py`의 기본 설정은 Ackermann bridge를 켜기 때문에 `rclpy`, `ackermann_msgs`, `geometry_msgs`, `nav_msgs`, `std_msgs`, `sensor_msgs` 등을 사용할 수 있는 ROS2 환경에서 실행해야 합니다.
+To run with the ROS2 bridge features enabled, the ROS2 environment and message packages must be available first. The default `main.py` configuration enables the Ackermann bridge, so the runtime environment must provide packages such as `rclpy`, `ackermann_msgs`, `geometry_msgs`, `nav_msgs`, `std_msgs`, and `sensor_msgs`.
 
-예시:
+Example:
 
 ```bash
 source /opt/ros/humble/setup.bash
 source <your_ros2_ws>/install/setup.bash
 ```
 
-## 실행 방법
+## Running
 
-`main.py`를 기준으로 백엔드 프로세스를 실행합니다.
+Start the backend processes from `main.py`.
 
 ```bash
 cd Brain
@@ -62,24 +62,24 @@ source .venv/bin/activate
 python3 main.py
 ```
 
-대시보드 프론트엔드는 별도 터미널에서 실행합니다.
+Start the dashboard frontend in a separate terminal.
 
 ```bash
 cd Brain/src/dashboard/frontend
 npm start
 ```
 
-브라우저에서 다음 주소로 접속합니다.
+Open the dashboard in a browser.
 
 ```text
 http://localhost:4200
 ```
 
-대시보드 백엔드는 `main.py`의 `processDashboard`가 `0.0.0.0:5005`에서 실행합니다. 프론트엔드는 이 백엔드와 WebSocket/API로 통신합니다.
+The dashboard backend is started by `processDashboard` from `main.py` and listens on `0.0.0.0:5005`. The frontend communicates with this backend through WebSocket and HTTP API calls.
 
-## 실행 옵션
+## Runtime Options
 
-`Brain/main.py` 상단의 enable flag로 필요한 프로세스를 켜고 끌 수 있습니다.
+The process enable flags are defined at the top of `Brain/main.py`.
 
 ```python
 ENABLE_GATEWAY = True
@@ -93,7 +93,7 @@ ENABLE_ACKERMAN = True
 ENABLE_GLOBAL_PLANNING_BRIDGE = True
 ```
 
-자주 사용하는 환경 변수:
+Common environment variables:
 
 ```bash
 export TRAFFIC_GPS_CAR_ID=5
@@ -102,8 +102,8 @@ export ROS_CAMERA_MAX_FPS=1
 export GLOBAL_PLANNING_GRAPHML=/path/to/track2.graphml
 ```
 
-ROS2 또는 차량 하드웨어 없이 UI만 확인하려면 `main.py`에서 필요한 bridge, camera, serial 관련 flag를 `False`로 바꾼 뒤 실행합니다.
+To check only the UI without ROS2 or vehicle hardware, set the unnecessary bridge, camera, and serial flags in `main.py` to `False` before running.
 
-## 종료
+## Shutdown
 
-백엔드와 프론트엔드 터미널에서 각각 `Ctrl + C`로 종료합니다. `main.py`는 `KeyboardInterrupt`를 받으면 실행 중인 child process를 순서대로 정리합니다.
+Stop the backend and frontend terminals with `Ctrl + C`. When `main.py` receives `KeyboardInterrupt`, it shuts down the running child processes in order.
